@@ -1,0 +1,5 @@
+# 定员八席 bundle patch：把本插件挂载进 profile 树。
+# 安装后由 `dsh plugin --profile web add dsh-agent-grid` 引入，无需手写这份 patch。
+- insert:
+    - id: agent-grid
+      name: 'dsh-agent-grid'

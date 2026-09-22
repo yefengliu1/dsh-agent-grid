@@ -1,0 +1,65 @@
+{
+  "name": "dsh-agent-grid",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "定员八席 —— 把 DeepSeek Harness 的侧栏换成 2×4 的常驻席位看板：八个 agent 各自的实时动作、状态与待办一眼看全。Not affiliated with DeepSeek.",
+  "license": "MIT",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "docs",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md"
+  ],
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "agent-dashboard",
+    "multi-agent",
+    "sidebar"
+  ],
+  "homepage": "https://github.com/yefengliu1/dsh-agent-grid#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yefengliu1/dsh-agent-grid.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yefengliu1/dsh-agent-grid/issues"
+  },
+  "dsh": {
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-session"
+      ],
+      "platform": "web"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "zod": "^4.4.3",
+    "@deepseek-ai/schemastery": "^3.18.2"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-api-session-controller": "^0.1.5-rc.2",
+    "@deepseek-ai/dsh-client-store": "^0.1.5-rc.2",
+    "@deepseek-ai/dsh-client-ui-layout": "^0.1.5-rc.2",
+    "@deepseek-ai/dsh-client-ui-session": "^0.1.5-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings": "^0.1.5-rc.2",
+    "@deepseek-ai/dsh-client-ui-sidebar": "^0.1.5-rc.2",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.1.5-rc.2",
+    "react": "^18.2.0"
+  }
+}

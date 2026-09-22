@@ -1,0 +1,8 @@
+node_modules/
+*.log
+.DS_Store
+
+# 构建与设计期产物（不进发布包，files 已限定内容）
+design/__pycache__/
+*.bak-*
+*.orig-*
