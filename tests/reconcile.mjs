@@ -28,10 +28,22 @@ function slice(startMarker, endMarker) {
 	return src.slice(from, to);
 }
 
+/** 抽一整行（用于单行声明）。 */
+function oneLine(marker) {
+	const from = src.indexOf(marker);
+	if (from < 0) throw new Error("测试找不到行：" + marker);
+	return src.slice(from, src.indexOf("\n", from));
+}
+
 const seatBlock = slice("const SEATS = [", "// ---- 槽位绑定");
 const bindingBlock = slice("const BIND_KEY =", "/**\n\t\t * 一个会话能不能坐进席位");
 const eligibleBlock = slice("/**\n\t\t * 一个会话能不能坐进席位", "/**\n\t\t * 席位绑定。三条规则");
 const reconcileBlock = slice("/**\n\t\t * 席位绑定。三条规则", "/** 清空一席：解绑当前会话");
+// 「这一席在等哪个工作区的空白会话」的判据 —— 换目录后认领会不会挂在路径形式上，
+// 全看这一段（见文件末尾第 6 组：canonical 路径与未投影 cwd 两个边界）。
+const wsListBlock = oneLine("let workspaceListOf = () => [];");
+const claimBlock = slice("const claimTarget = (seatId, workspace) => {", "/**\n\t\t\t\t * 目标空白会话");
+const inClaimBlock = slice("const inClaimWorkspace = (claim, sessionId, summary) => {", "// 「这一席在等一个新空白会话」：记事实");
 
 /** 造一个只带 localStorage 的最小 window。 */
 function makeSandbox() {
@@ -45,8 +57,9 @@ function makeSandbox() {
 	vm.createContext(sandbox);
 	// vm 里顶层的 const/let 不会挂到 sandbox 上，所以显式导出一份句柄给测试用。
 	vm.runInContext(
-		[seatBlock, bindingBlock, eligibleBlock, reconcileBlock].join("\n")
-			+ "\nglobalThis.__api = { SEATS, reconcile, readStore, writeStore };",
+		[seatBlock, bindingBlock, eligibleBlock, reconcileBlock, wsListBlock, claimBlock, inClaimBlock].join("\n")
+			+ "\nglobalThis.__api = { SEATS, reconcile, readStore, writeStore, claimTarget, inClaimWorkspace,"
+			+ " setWorkspaceList: (items) => { workspaceListOf = () => items; } };",
 		sandbox,
 	);
 	return { sandbox, store, api: sandbox.__api };
@@ -87,12 +100,21 @@ const SUBCON = { blank: false, origin: "subagent" };
 	check("未就绪：不清绑定", after.hanzhongli === "a", JSON.stringify(after));
 }
 
-// ---- 3. 非 current 的空白槽一律解绑 ----------------------------------------
+// ---- 3. 空白槽的清理，只发生在「current 也是空白槽」时 ----------------------
 {
+	// 3a. current 换成了**另一个空白槽** —— 这是 connectWorkspace 弹跳的现场，照旧清理
 	const { api } = makeSandbox();
-	api.reconcile(["a", "b"], { a: BLANK, b: LIVE }, true, "a");
-	const bind = api.reconcile(["a", "b"], { a: BLANK, b: LIVE }, true, "b");
-	check("空白槽：current 易主后旧的解绑", bind.hanzhongli === undefined, JSON.stringify(bind));
+	api.reconcile(["a", "b"], { a: BLANK, b: BLANK }, true, "a");
+	const bind = api.reconcile(["a", "b"], { a: BLANK, b: BLANK }, true, "b");
+	check("空白槽：current 换成另一个空白槽时，旧的解绑", bind.hanzhongli === undefined, JSON.stringify(bind));
+
+	// 3b. current 换成了**正常会话** —— 用户只是切走看一眼，空白槽必须留住。
+	// 真机复现过：按旧写法这里会解绑，于是那一席的对话在八席看板上消失，
+	// 只能在默认侧栏（selected blank 可见）里找回来。
+	const kept = makeSandbox();
+	kept.api.reconcile(["a", "b"], { a: BLANK, b: LIVE }, true, "a");
+	const after = kept.api.reconcile(["a", "b"], { a: BLANK, b: LIVE }, true, "b");
+	check("空白槽：current 是正常会话时不解绑（本次修复）", after.hanzhongli === "a", JSON.stringify(after));
 }
 
 // ---- 4. 本次修复：current 为空时不得清空任何绑定 ----------------------------
@@ -108,9 +130,10 @@ const SUBCON = { blank: false, origin: "subagent" };
 	const after = api.reconcile(["a", "b"], { a: BLANK, b: LIVE }, true, undefined);
 	check("current 为空：不清绑定（本次修复）", after.hanzhongli === "a" && after.ludongbin === "b", JSON.stringify(after));
 
-	// current 回来（落在别处）之后，非 current 的空白槽仍然照常解绑 —— 旧规则没被削弱
-	const restored = api.reconcile(["a", "b"], { a: BLANK, b: LIVE }, true, "b");
-	check("current 恢复：裁决照旧生效", restored.hanzhongli === undefined && restored.ludongbin === "b", JSON.stringify(restored));
+	// current 落到**另一个空白槽**时，别的空白槽仍然照常解绑；正常会话不受影响
+	const restored = api.reconcile(["a", "b", "c"], { a: BLANK, b: LIVE, c: BLANK }, true, "c");
+	check("current 落在另一个空白槽：裁决照旧生效",
+		restored.hanzhongli === undefined && restored.ludongbin === "b", JSON.stringify(restored));
 }
 
 // ---- 5. 会话消失 / 变成子会话 → 解绑 --------------------------------------
@@ -121,6 +144,54 @@ const SUBCON = { blank: false, origin: "subagent" };
 	check("会话没了：解绑", gone.hanzhongli === undefined, JSON.stringify(gone));
 	const sub = api.reconcile(["b"], { b: SUBCON }, true, "a");
 	check("会话变成子会话：解绑", sub.ludongbin === undefined, JSON.stringify(sub));
+}
+
+// ---- 6. claim 的形状：canonical 的 WorkspaceView 是主判据 --------------------
+{
+	const { api } = makeSandbox();
+	const t = api.claimTarget("hanzhongli", { workspaceId: "ws-1", path: "/private/tmp/x" });
+	check("claim：从 WorkspaceView 取到 workspaceId", t.workspaceId === "ws-1", JSON.stringify(t));
+	check("claim：从 WorkspaceView 取到 canonical path", t.cwd === "/private/tmp/x", JSON.stringify(t));
+
+	const bare = api.claimTarget("hanzhongli", "/tmp/x");
+	check("claim：仍接受裸 cwd 字符串（无 workspaceId）",
+		bare.workspaceId === null && bare.cwd === "/tmp/x", JSON.stringify(bare));
+	check("claim：空值不会造出假 workspaceId",
+		api.claimTarget("hanzhongli", undefined).workspaceId === null);
+}
+
+// ---- 7. 换目录后认领：路径形式不同也得认得上（走 host membership）-----------
+// 这条钉的是一个真实丢对话的 bug：换目录时曾经把 pickDirectory() 的**原始**路径
+// 拿去和 host 的 canonical cwd 比字符串 —— 路径含符号链接（macOS 的 /tmp、/var、
+// /Volumes/...）时恒不匹配，新会话没有任何席位认领 = 八席里"这条对话不见了"。
+{
+	const { api } = makeSandbox();
+	api.setWorkspaceList([{ workspaceId: "ws-1", path: "/private/tmp/x", sessionIds: ["s1"] }]);
+	const claim = api.claimTarget("hanzhongli", { workspaceId: "ws-1", path: "/private/tmp/x" });
+
+	// summary.cwd 故意给成"用户选的原始路径"，模拟未 realpath 的形式
+	check("路径形式不同也能认领（判据是 membership，不是字符串）",
+		api.inClaimWorkspace(claim, "s1", { cwd: "/tmp/x" }) === true);
+	check("不在目标工作区的会话不认领",
+		api.inClaimWorkspace(claim, "s-elsewhere", { cwd: "/private/tmp/x" }) === false);
+	api.setWorkspaceList([]);
+	check("工作区列表未就绪：不认领（继续等，不丢弃）",
+		api.inClaimWorkspace(claim, "s1", { cwd: "/private/tmp/x" }) === false);
+}
+
+// ---- 8. summary.cwd 尚未投影时，不判为"不匹配" ------------------------------
+// `SessionSummary.cwd` 是可选项，新会话刚建好那一刻可能还没有值。
+// 旧实现拿 undefined 去比字符串 = 恒不等 -> 认领被卡到 TTL 过期。
+{
+	const { api } = makeSandbox();
+	const bare = api.claimTarget("hanzhongli", "/tmp/x");
+	check("cwd 未投影 -> 放行（无法证伪就别判死）",
+		api.inClaimWorkspace(bare, "s1", { blank: true }) === true);
+	check("兜底：cwd 可比时照旧比较（原有防错没被削弱）",
+		api.inClaimWorkspace(bare, "s1", { cwd: "/tmp/x" }) === true
+			&& api.inClaimWorkspace(bare, "s1", { cwd: "/tmp/y" }) === false);
+	check("兜底：claim 没有 cwd 时放行",
+		api.inClaimWorkspace(api.claimTarget("hanzhongli", undefined), "s1", { cwd: "/tmp/y" }) === true);
 }
 
 console.log(failures === 0 ? "\nreconcile: 全部通过" : `\nreconcile: ${failures} 项失败`);

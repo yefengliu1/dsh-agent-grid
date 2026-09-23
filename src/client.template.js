@@ -167,13 +167,26 @@ window.__ModuleLoader__.load({
 				// 为什么：平台的 connectWorkspace() 在切换工作区时会打开「该工作区里
 				// 第一个 blank 会话」（源码写死）。如果每个空席都留着自己的空白会话，
 				// 用户一选工作区就会被弹到别的席位去（实测踩过：国舅选目录 → 跳到洞宾）。
-				// 所以空白槽全局只留「当前正在用的那个」，其余一律解绑。
 				//
-				// 但 current 为空时必须整个跳过：平台 `sessions.clear()` 之后（用户正看着
+				// **但触发条件必须收紧到「current 本身也是空白槽」。** 真机复现过一条：
+				// 用户在某一席开了一个空白对话，然后点去看别的**正常**对话 —— 按原来的
+				// 「current 一变就清」写法，那一席的空白槽立刻被解绑，八席看板上它就此
+				// 消失（看板只渲染 bindings，无主会话没有任何呈现）。而它是个 blank 会话，
+				// 在默认侧栏里**只有作为 selected 时才可见** —— 用户体验就是
+				// 「这条对话从八仙开始，然后不见了，只能切回原始侧边栏才找得到」。
+				//
+				// connectWorkspace 弹跳的现场特征是 **current 变成了另一个空白槽**（收件人
+				// 是那个新 blank），所以只在那一点上清理别的 blank，既保住原有防护，
+				// 又不会因为用户「切走看一眼」就丢掉待命席位。
+				//
+				// 另外 current 为空时必须整个跳过：平台 `sessions.clear()` 之后（用户正看着
 				// 「选择工作目录」空态）列表处在中间态，按它裁决会把**所有**「待命」席位的
 				// 绑定一次清光 —— 于是 clear 完那一席就再也回不到自己的会话了。
 				const summary = byId[cur];
-				if (current !== undefined && summary && summary.blank === true && cur !== current) {
+				const currentIsBlank = current !== undefined
+					&& byId[current] !== undefined
+					&& byId[current].blank === true;
+				if (currentIsBlank && summary && summary.blank === true && cur !== current) {
 					delete store.bind[seat.id];
 					changed = true;
 				}
@@ -1031,12 +1044,64 @@ html.dsx-grid-mode button[class*="_brand"]{pointer-events:none !important;}
 				// connectWorkspace() 会复用它的第一个 blank（见上文 reconcile 的注释）。
 				// 所以这里只记「哪一席在等」+「等哪个工作目录」，具体会话交给
 				// uiWorkspace.startSession(workspaceId) 去挑。
+				/**
+				 * 造一份「这一席在等哪个工作区的空白会话」的 claim。
+				 *
+				 * **两个字段都记，判定只信 `workspaceId`。** 原因是实测踩过的一条：
+				 *
+				 * host 的会话归属是按 **canonical** cwd 相等算的（`WorkspaceView.path` 的
+				 * 契约写明是 "Canonical host directory path"，且 workspace 路径经
+				 * `fs.realpath` 规范化；`SessionSummary.cwd` 同源）。而
+				 * `uiWorkspace.pickDirectory()` 只承诺 "the selected directory" ——
+				 * **没有任何 canonical 保证**。拿用户选的原始路径去比 canonical cwd，
+				 * 路径含符号链接（macOS 上 `/tmp`、`/var`、`/Volumes/...`、或任何 symlink）
+				 * 时**恒不匹配** → 换目录后的新会话永远认领不上 → 八席里"这条对话不见了"
+				 * （看板只渲染 bindings，无主会话没有任何呈现），只能切回默认侧栏才看得到。
+				 *
+				 * 所以 `workspaceId` 是权威判据（host 的 membership），`cwd` 只留给
+				 * workspaceId 缺失时的兜底与日志 —— 它也自然修掉了另一个边界：
+				 * `SessionSummary.cwd` 是**可选**字段，新会话刚建好那一刻可能还没投影，
+				 * 那时比字符串同样会把认领卡死。
+				 *
+				 * 传 WorkspaceView（两条调用路径都能拿到）优先；为稳妥也接受裸 cwd 字符串。
+				 */
+				const claimTarget = (seatId, workspace) => {
+					const isView = !!workspace && typeof workspace === "object";
+					const cwd = isView
+						? (typeof workspace.path === "string" ? workspace.path : null)
+						: (typeof workspace === "string" ? workspace : null);
+					const workspaceId = isView && workspace.workspaceId !== undefined ? workspace.workspaceId : null;
+					return { seatId, workspaceId, cwd, at: Date.now() };
+				};
+
+				/**
+				 * 目标空白会话是不是真的落在**这一席要的那个工作区**里。
+				 *
+				 * 优先用 host 的工作区归属（`WorkspaceView.sessionIds`）—— 权威、canonical、
+				 * 且不依赖 `SessionSummary.cwd` 是否已投影。只有在拿不到 workspaceId 时
+				 * 才退回比路径，且**未投影的 cwd 不判为不匹配**（无法证伪就放行，
+				 * 比永久卡死、把用户的对话弄丢要好）。
+				 *
+				 * 返回 false 只表示"还不能确认"，调用方一律继续等下一拍，不做丢弃。
+				 */
+				const inClaimWorkspace = (claim, sessionId, summary) => {
+					if (claim.workspaceId !== null) {
+						const items = workspaceListOf() || [];
+						const ws = items.find((item) => item.workspaceId === claim.workspaceId);
+						if (ws === undefined) return false; // 工作区列表还没就绪
+						return ws.sessionIds.includes(sessionId);
+					}
+					if (claim.cwd === null) return true;
+					if (!summary || typeof summary.cwd !== "string") return true; // 未投影：不视为不匹配
+					return summary.cwd === claim.cwd;
+				};
+
 				// 「这一席在等一个新空白会话」：记事实 + 安排主动复查 + 兜底解锁。
 				// 抽出来是因为两条路都要它 —— 空席新建，以及换工作目录后在新工作区开会话。
-				const beginClaim = (seatId, cwd) => {
+				const beginClaim = (seatId, workspace) => {
 					if (disposed || creatingSeats.has(seatId)) return false;
 					creatingSeats.add(seatId);
-					pendingSeat = { seatId, cwd: cwd === undefined ? null : cwd, at: Date.now() };
+					pendingSeat = claimTarget(seatId, workspace);
 					// 平台可能「当前会话本来就是那个空白槽」→ open() 不产生变更事件，
 					// 那就不会触发下面的订阅回调，所以主动再查一次。
 					later(() => {
@@ -1053,9 +1118,9 @@ html.dsx-grid-mode button[class*="_brand"]{pointer-events:none !important;}
 				 * 一次工作目录 —— 不能因为防连点就把这次选择静默丢掉。把 claim 的目标改到
 				 * 刚选的工作区，并让它立刻生效。
 				 */
-				const claimSeatNowImpl = (seatId, cwd) => {
+				const claimSeatNowImpl = (seatId, workspace) => {
 					if (disposed) return false;
-					pendingSeat = { seatId, cwd: cwd === undefined ? null : cwd, at: Date.now() };
+					pendingSeat = claimTarget(seatId, workspace);
 					creatingSeats.add(seatId);
 					later(() => creatingSeats.delete(seatId), 8000);
 					return true;
@@ -1064,7 +1129,7 @@ html.dsx-grid-mode button[class*="_brand"]{pointer-events:none !important;}
 
 				/** 真正发起「这一席新开一个会话」：工作区已定，只差认领 + 交给平台。 */
 				const startSeatSessionAt = (seatId, workspace) => {
-					if (!beginClaim(seatId, workspace.path)) return;
+					if (!beginClaim(seatId, workspace)) return;
 					startNewSessionFlow(workspace.workspaceId);
 				};
 
@@ -1117,11 +1182,15 @@ html.dsx-grid-mode button[class*="_brand"]{pointer-events:none !important;}
 							pendingSeat = null;
 						} else {
 							if (summary.blank !== true) return; // 还没切到空白会话，继续等
-							// 而且这个空白槽必须落在**目标工作目录**里。平台的
+							// 而且这个空白槽必须落在**目标工作区**里。平台的
 							// connectWorkspace() 只认「该工作区第一个 blank」，别的席可能把
 							// 空白槽留在别的工作区 —— 少了这道校验，clear 国舅就会认领到
 							// 钟离那个工作区的空席，人也就跟着跳过去了。
-							if (pendingSeat.cwd !== null && summary.cwd !== pendingSeat.cwd) return;
+							//
+							// 判据走 host 的 membership（`sessionIds`），不比路径字符串：
+							// 见 claimTarget 那段注释 —— 比字符串会在路径非 canonical、
+							// 或 `summary.cwd` 尚未投影时**恒不匹配**，把用户的对话弄丢。
+							if (!inClaimWorkspace(pendingSeat, snapshot.current, summary)) return;
 							const seatId = pendingSeat.seatId;
 							pendingSeat = null;
 							creatingSeats.delete(seatId);
@@ -1208,9 +1277,15 @@ html.dsx-grid-mode button[class*="_brand"]{pointer-events:none !important;}
 						if (workspaceId === undefined) throw new Error("工作区登记未返回 workspaceId");
 						// 这一席可能还在 8s 防连点窗口里（典型：刚 `/clear` 完就想换目录）——
 						// 不能因此把用户这次选择静默丢掉。同席接力，让这次选择立刻生效。
+						//
+						// **claim 传 `workspace`（canonical 的 WorkspaceView），不传 `path`。**
+						// `path` 是 `pickDirectory()` 的原始返回值，只有"用户选中了它"这层
+						// 含义；host 认会话归属用的是 canonical cwd（见 claimTarget 注释）。
+						// 传原始 path 曾在 symlink 目录上让认领恒失败 —— 新会话无主，
+						// 八席里那条对话直接"不见了"。
 						if (beginSeatClaim === null) return;
-						if (!beginSeatClaim(seatId, path)) {
-							if (claimSeatNow === null || !claimSeatNow(seatId, path)) return;
+						if (!beginSeatClaim(seatId, workspace)) {
+							if (claimSeatNow === null || !claimSeatNow(seatId, workspace)) return;
 						}
 						w.uiWorkspace.startSession(workspaceId);
 					} catch (error) {
