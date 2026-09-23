@@ -168,8 +168,12 @@ window.__ModuleLoader__.load({
 				// 第一个 blank 会话」（源码写死）。如果每个空席都留着自己的空白会话，
 				// 用户一选工作区就会被弹到别的席位去（实测踩过：国舅选目录 → 跳到洞宾）。
 				// 所以空白槽全局只留「当前正在用的那个」，其余一律解绑。
+				//
+				// 但 current 为空时必须整个跳过：平台 `sessions.clear()` 之后（用户正看着
+				// 「选择工作目录」空态）列表处在中间态，按它裁决会把**所有**「待命」席位的
+				// 绑定一次清光 —— 于是 clear 完那一席就再也回不到自己的会话了。
 				const summary = byId[cur];
-				if (summary && summary.blank === true && cur !== current) {
+				if (current !== undefined && summary && summary.blank === true && cur !== current) {
 					delete store.bind[seat.id];
 					changed = true;
 				}
@@ -465,12 +469,29 @@ window.__ModuleLoader__.load({
 		let switchSeatDirectory = null;
 		/** 「这一席马上会认领一个新空白会话」——只记事实，定时器归 sessions fiber 管。 */
 		let beginSeatClaim = null;
-		/** 正在等平台把「空白会话」准备好、好认领的那一席。 */
+		/** 同席接力：这一席还在防连点窗口里，但用户刚又选了一次目录，这次必须生效。 */
+		let claimSeatNow = null;
+		/**
+		 * 正在等平台把「空白会话」准备好、好认领的那一席。
+		 *
+		 * 形状是 `{ seatId, cwd, at }` 而不是裸的 seatId —— 两个字段都必须跟着走：
+		 *
+		 *   cwd —— 只认领**这个工作目录**里的空白会话。平台的 `connectWorkspace()` 会
+		 *     复用「该工作区里第一个 blank 会话」，而八席模式下别的席位也可能留着空白槽；
+		 *     没有这道校验，clear 国舅会认领到钟离留在别处的空席（实测踩过）。
+		 *
+		 *   at —— claim 是有寿命的。`/clear` 信号在 20s 窗口里会被重放，一个永不失效的
+		 *     claim 会在几十秒后劫持一个毫不相干的空白会话，把人送到别的席位上。
+		 */
 		let pendingSeat = null;
+		/** 认领有效期：超过就丢弃 —— 宁可不认，也不能认错。 */
+		const CLAIM_TTL_MS = 30000;
 		/** 最近一次「当前会话」所属的席位 —— 换工作区文件夹后靠它把新空白槽归位。 */
 		let lastSeatId = null;
 		/** 平台的新建流程（uiWorkspace.startSession）—— 会复用工作区唯一的空白会话。 */
 		let startNewSessionFlow = () => {};
+		/** 工作区列表读取器（由 uiWorkspace fiber 注入，避免两个 fiber 互相依赖）。 */
+		let workspaceListOf = () => [];
 		/** 正在创建中的席位 —— 防手抖连点（点两下就多出两个会话，与八席上限的设计相悖）。 */
 		const creatingSeats = new Set();
 
@@ -542,17 +563,23 @@ window.__ModuleLoader__.load({
 			//
 			// 只认最近 20 秒内的信号：页面刷新会把历史上每次 clear 都重放一遍，
 			// 没有这道闸，刷新一次就会莫名其妙连开好几个会话。
+			//
+			// 而且一轮里**只处理最新的那一个**。逐席触发的话，重放出来的一串信号会
+			// 连着开好几个会话，而**最后被处理的那一席**会把当前焦点抢走 —— 表现就是
+			// 「clear 了国舅，焦点却跑到钟离」。只认最近一次，就只开一个、也只跳一次。
 			const handledClear = React.useRef({});
 			React.useEffect(() => {
 				if (createSeatSession === null) return;
 				const now = Date.now();
+				let newest = null;
 				for (const c of cells) {
 					const at = c.act && typeof c.act.clearedAt === "number" ? c.act.clearedAt : 0;
 					if (at === 0 || now - at > 20000) continue;
 					if (handledClear.current[c.seat.id] === at) continue;
 					handledClear.current[c.seat.id] = at;
-					createSeatSession(c.seat.id);
+					if (newest === null || at > newest.at) newest = { seatId: c.seat.id, at };
 				}
+				if (newest !== null) createSeatSession(newest.seatId);
 			});
 
 			if (!wide) {
@@ -972,25 +999,48 @@ html.dsx-grid-mode button[class*="_brand"]{pointer-events:none !important;}
 
 				openSeatSession = (sessionId) => {
 					if (disposed) return;
+					// 「上次所在的席」跟着**用户真正点开的那一席**走。它是下面第 3 条
+					// 兜底认领的依据 —— 认错就会把新空白会话塞给别的席（焦点跳格子）。
+					const seat = SEATS.find((s) => readStore().bind[s.id] === sessionId);
+					if (seat !== undefined) lastSeatId = seat.id;
 					c.sessions.open(sessionId);
 					ctx.layout.selectPanel(null); // 若之前在某个 main 面板里，回到原装对话
 				};
+
+				/**
+				 * 这一席该在哪个工作区干活。
+				 *
+				 * 优先它自己会话所属的工作区 —— `/clear` 的语义是「在**同一席**新开一个
+				 * 对话」，工作目录必须不变；空席则跟随当前会话所在的工作区（用户此刻的语境）。
+				 * 返回 undefined 表示列表还没就绪、真的判断不出来。
+				 */
+				const seatWorkspace = (seatId) => {
+					const items = workspaceListOf() || [];
+					const ownerOfSession = (sid) => items.find((item) => item.sessionIds.includes(sid));
+					const bound = readStore().bind[seatId];
+					const owned = bound === undefined ? undefined : ownerOfSession(bound);
+					if (owned !== undefined) return owned;
+					const cur = c.sessions.list.getSnapshot().current;
+					return cur === undefined ? undefined : ownerOfSession(cur);
+				};
+
 				// 空席新建：宿主侧建完立刻绑到这一席，再切过去。
 				// 这是八席模式下的**唯一**新建入口（原生「新建会话」按钮已隐藏）。
 				// 空席点击 = 认领**平台自己的**新会话槽，而不是另造一个空白会话。
 				// 平台模型：一个工作区只有一个「空白会话」作为新会话位，
 				// connectWorkspace() 会复用它的第一个 blank（见上文 reconcile 的注释）。
-				// 所以这里只记「哪一席在等」，具体会话交给 uiWorkspace.startSession()。
+				// 所以这里只记「哪一席在等」+「等哪个工作目录」，具体会话交给
+				// uiWorkspace.startSession(workspaceId) 去挑。
 				// 「这一席在等一个新空白会话」：记事实 + 安排主动复查 + 兜底解锁。
 				// 抽出来是因为两条路都要它 —— 空席新建，以及换工作目录后在新工作区开会话。
-				const beginClaim = (seatId) => {
+				const beginClaim = (seatId, cwd) => {
 					if (disposed || creatingSeats.has(seatId)) return false;
 					creatingSeats.add(seatId);
-					pendingSeat = seatId;
+					pendingSeat = { seatId, cwd: cwd === undefined ? null : cwd, at: Date.now() };
 					// 平台可能「当前会话本来就是那个空白槽」→ open() 不产生变更事件，
 					// 那就不会触发下面的订阅回调，所以主动再查一次。
 					later(() => {
-						if (pendingSeat === seatId) claimPendingSeat();
+						if (pendingSeat !== null && pendingSeat.seatId === seatId) claimPendingSeat();
 					}, 300);
 					// 兜底：万一平台一直没给出空白会话，也别把这一席永久锁死
 					later(() => creatingSeats.delete(seatId), 8000);
@@ -998,9 +1048,48 @@ html.dsx-grid-mode button[class*="_brand"]{pointer-events:none !important;}
 				};
 				beginSeatClaim = beginClaim;
 
+				/**
+				 * 同席接力：这一席还在 8s 防连点窗口里（例如刚 `/clear` 过），但用户又选了
+				 * 一次工作目录 —— 不能因为防连点就把这次选择静默丢掉。把 claim 的目标改到
+				 * 刚选的工作区，并让它立刻生效。
+				 */
+				const claimSeatNowImpl = (seatId, cwd) => {
+					if (disposed) return false;
+					pendingSeat = { seatId, cwd: cwd === undefined ? null : cwd, at: Date.now() };
+					creatingSeats.add(seatId);
+					later(() => creatingSeats.delete(seatId), 8000);
+					return true;
+				};
+				claimSeatNow = claimSeatNowImpl;
+
+				/** 真正发起「这一席新开一个会话」：工作区已定，只差认领 + 交给平台。 */
+				const startSeatSessionAt = (seatId, workspace) => {
+					if (!beginClaim(seatId, workspace.path)) return;
+					startNewSessionFlow(workspace.workspaceId);
+				};
+
 				createSeatSession = (seatId) => {
-					if (!beginClaim(seatId)) return;
-					startNewSessionFlow();
+					// 先定工作区、再认领：`/clear` 之后必须在**同一个**工作目录里开新会话。
+					// 以前这里是 `startNewSessionFlow()`（不带参数），平台会退到「当前/最近
+					// 工作区」；一旦解析不出来就 `sessions.clear()` —— 用户看到的是
+					// 「选择工作目录」空态，正是 bug 报告里的第一步。宁可不新建，也不把
+					// 用户扔进那个空态。
+					const workspace = seatWorkspace(seatId);
+					if (workspace !== undefined) {
+						startSeatSessionAt(seatId, workspace);
+						return;
+					}
+					// 列表可能还没就绪（首次渲染 / 刚重连）。等一拍再试一次 ——
+					// 用户点了一下空席却什么都没发生，比慢半秒更糟。
+					later(() => {
+						if (disposed || creatingSeats.has(seatId)) return;
+						const retry = seatWorkspace(seatId);
+						if (retry === undefined) {
+							console.warn("[agent-grid] 这一席没有可用的工作区，暂不新建会话（避免把用户扔进「选择工作目录」）");
+							return;
+						}
+						startSeatSessionAt(seatId, retry);
+					}, 400);
 				};
 
 				// 会话列表一变就检查「当前会话的席位归属」，两件事：
@@ -1017,19 +1106,32 @@ html.dsx-grid-mode button[class*="_brand"]{pointer-events:none !important;}
 					if (!summary) return;
 					const ownerOf = () => SEATS.find((seat) => readStore().bind[seat.id] === snapshot.current);
 
-					// 1) 有席在等（用户刚点了空席）→ 把当前空白槽交给它，优先级最高。
-					//    平台可能复用了别席已有的空白槽（一个工作区只有一个），那就移过来。
+					// 1) 有席在等（用户刚点了空席 / 刚 clear / 刚换目录）→ 把当前空白槽交给它，
+					//    优先级最高。平台可能复用了别席已有的空白槽（一个工作区只有一个），
+					//    那就把它移过来。
 					if (pendingSeat !== null) {
-						if (summary.blank !== true) return; // 还没切到空白会话，继续等
-						const seatId = pendingSeat;
-						pendingSeat = null;
-						creatingSeats.delete(seatId);
-						SEATS.forEach((seat) => {
-							if (seat.id !== seatId && readStore().bind[seat.id] === snapshot.current) clearSeatBinding(seat.id);
-						});
-						setSeatBinding(seatId, snapshot.current);
-						lastSeatId = seatId;
-						return;
+						// 过期的 claim 直接丢弃。`/clear` 信号会在 20s 窗口里被重放，一个永不
+						// 失效的 claim 会在几十秒后劫持一个毫不相干的空白会话。
+						if (Date.now() - pendingSeat.at > CLAIM_TTL_MS) {
+							creatingSeats.delete(pendingSeat.seatId);
+							pendingSeat = null;
+						} else {
+							if (summary.blank !== true) return; // 还没切到空白会话，继续等
+							// 而且这个空白槽必须落在**目标工作目录**里。平台的
+							// connectWorkspace() 只认「该工作区第一个 blank」，别的席可能把
+							// 空白槽留在别的工作区 —— 少了这道校验，clear 国舅就会认领到
+							// 钟离那个工作区的空席，人也就跟着跳过去了。
+							if (pendingSeat.cwd !== null && summary.cwd !== pendingSeat.cwd) return;
+							const seatId = pendingSeat.seatId;
+							pendingSeat = null;
+							creatingSeats.delete(seatId);
+							SEATS.forEach((seat) => {
+								if (seat.id !== seatId && readStore().bind[seat.id] === snapshot.current) clearSeatBinding(seat.id);
+							});
+							setSeatBinding(seatId, snapshot.current);
+							lastSeatId = seatId;
+							return;
+						}
 					}
 
 					// 2) 没有等待者：记住当前会话属于哪一席
@@ -1041,7 +1143,10 @@ html.dsx-grid-mode button[class*="_brand"]{pointer-events:none !important;}
 
 					// 3) 无主的空白会话（例如在空白席里换了工作区文件夹，平台又开了一个）
 					//    → 归给上次所在的席，别让用户站在一个不属于任何席位的会话里。
+					//    但只在这一席**真的空着**时才认领：否则用户从平台侧选一次工作目录，
+					//    就会顶掉某个无关席位（实测：钟离）已有的绑定 = 焦点莫名跳过去。
 					if (summary.blank !== true || lastSeatId === null) return;
+					if (readStore().bind[lastSeatId] !== undefined) return;
 					setSeatBinding(lastSeatId, snapshot.current);
 				};
 				const unsubscribeClaim = c.sessions.list.subscribe(claimPendingSeat);
@@ -1059,6 +1164,7 @@ html.dsx-grid-mode button[class*="_brand"]{pointer-events:none !important;}
 					openSeatSession = () => {};
 					createSeatSession = null;
 					if (beginSeatClaim === beginClaim) beginSeatClaim = null;
+					if (claimSeatNow === claimSeatNowImpl) claimSeatNow = null;
 				};
 			});
 
@@ -1069,6 +1175,14 @@ html.dsx-grid-mode button[class*="_brand"]{pointer-events:none !important;}
 			// 它挑当前/最近工作区，并复用该工作区里已有的空白会话，不会造出第二个。
 			// workspaces 服务：把宿主目录登记成真实工作区（已登记则幂等返回）。
 			ctx.inject(["uiWorkspace", "workspaces"], (w) => {
+				// 工作区列表读取器：sessions fiber 判断「这一席该在哪个工作区」要用它，
+				// 但那个 fiber 里拿不到 workspaces 服务 —— 用这个模块级钩子单向注入，
+				// 免得两个 fiber 互相依赖（谁先就绪都不确定）。
+				workspaceListOf = () => {
+					const snap = w.workspaces.list.getSnapshot();
+					return snap && Array.isArray(snap.items) ? snap.items : [];
+				};
+
 				startNewSessionFlow = (workspaceId) => {
 					try {
 						w.uiWorkspace.startSession(workspaceId);
@@ -1092,18 +1206,24 @@ html.dsx-grid-mode button[class*="_brand"]{pointer-events:none !important;}
 						// 字段名是 WorkspaceView.workspaceId —— 不是 id（写错的话这里必然抛错）
 						const workspaceId = workspace ? workspace.workspaceId : undefined;
 						if (workspaceId === undefined) throw new Error("工作区登记未返回 workspaceId");
-						if (beginSeatClaim === null || !beginSeatClaim(seatId)) return;
+						// 这一席可能还在 8s 防连点窗口里（典型：刚 `/clear` 完就想换目录）——
+						// 不能因此把用户这次选择静默丢掉。同席接力，让这次选择立刻生效。
+						if (beginSeatClaim === null) return;
+						if (!beginSeatClaim(seatId, path)) {
+							if (claimSeatNow === null || !claimSeatNow(seatId, path)) return;
+						}
 						w.uiWorkspace.startSession(workspaceId);
 					} catch (error) {
 						// 目录被拒（无权限/已删除）、登记失败等：别把这一席卡在「等待认领」
 						console.warn("[agent-grid] 换工作目录失败：", error);
-						if (pendingSeat === seatId) pendingSeat = null;
+						if (pendingSeat !== null && pendingSeat.seatId === seatId) pendingSeat = null;
 						creatingSeats.delete(seatId);
 					}
 				};
 
 				return () => {
 					startNewSessionFlow = () => {};
+					workspaceListOf = () => [];
 					switchSeatDirectory = null;
 				};
 			});
