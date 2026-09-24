@@ -44,6 +44,9 @@ const reconcileBlock = slice("/**\n\t\t * 席位绑定。三条规则", "/** 清
 const wsListBlock = oneLine("let workspaceListOf = () => [];");
 const claimBlock = slice("const claimTarget = (seatId, workspace) => {", "/**\n\t\t\t\t * 目标空白会话");
 const inClaimBlock = slice("const inClaimWorkspace = (claim, sessionId, summary) => {", "// 「这一席在等一个新空白会话」：记事实");
+// 「新建时会不会端走别人的待命槽」的判据 —— 从八席起的对话被挪到别的格子，
+// 正是这一段的返回值决定的（见第 9 组）。
+const ownedBlankBlock = slice("const ownedBlankIn = (workspace, snapshot, bind) => {", "const createFreshSession");
 
 /** 造一个只带 localStorage 的最小 window。 */
 function makeSandbox() {
@@ -57,8 +60,8 @@ function makeSandbox() {
 	vm.createContext(sandbox);
 	// vm 里顶层的 const/let 不会挂到 sandbox 上，所以显式导出一份句柄给测试用。
 	vm.runInContext(
-		[seatBlock, bindingBlock, eligibleBlock, reconcileBlock, wsListBlock, claimBlock, inClaimBlock].join("\n")
-			+ "\nglobalThis.__api = { SEATS, reconcile, readStore, writeStore, claimTarget, inClaimWorkspace,"
+		[seatBlock, bindingBlock, eligibleBlock, reconcileBlock, wsListBlock, claimBlock, inClaimBlock, ownedBlankBlock].join("\n")
+			+ "\nglobalThis.__api = { SEATS, reconcile, readStore, writeStore, claimTarget, inClaimWorkspace, ownedBlankIn,"
 			+ " setWorkspaceList: (items) => { workspaceListOf = () => items; } };",
 		sandbox,
 	);
@@ -192,6 +195,29 @@ const SUBCON = { blank: false, origin: "subagent" };
 			&& api.inClaimWorkspace(bare, "s1", { cwd: "/tmp/y" }) === false);
 	check("兜底：claim 没有 cwd 时放行",
 		api.inClaimWorkspace(api.claimTarget("hanzhongli", undefined), "s1", { cwd: "/tmp/y" }) === true);
+}
+
+// ---- 9. 新建时不得端走别人的待命槽 ------------------------------------------
+// 真机现象：**从八席起的对话被挪到别的格子**。机制是平台的 connectWorkspace() 会复用
+// 「该工作区第一个 blank 会话」，而八席里「待命」是正式状态、多个席各自持有空白槽是常态 ——
+// 于是复用到别人的槽上，认领再把它从原席移走。修复：发起新建前先探这个判据，有主就自己造。
+{
+	const { api } = makeSandbox();
+	const bind = { hanzhongli: "s-other" };
+	const ws = { workspaceId: "ws-1", path: "/p", sessionIds: ["s-blank-orphan", "s-other", "s-live"] };
+	const snap = (entries) => ({ ids: Object.keys(entries), byId: entries });
+
+	check("认出别人的待命槽（blank + 有主）",
+		api.ownedBlankIn(ws, snap({ "s-other": { blank: true } }), bind)?.id === "hanzhongli");
+	check("无主的 blank 不算 —— 平台复用它本来就是设计（空席新建走这条路）",
+		api.ownedBlankIn(ws, snap({ "s-blank-orphan": { blank: true } }), {}) === null);
+	check("有主但不是 blank（跑着任务）不算 —— 平台不会复用它",
+		api.ownedBlankIn(ws, snap({ "s-other": { blank: false } }), bind) === null);
+	check("有主的 blank 但不属于这个工作区 -> 不算（平台也不会端它）",
+		api.ownedBlankIn({ workspaceId: "ws-2", path: "/q", sessionIds: ["s-x"] },
+			snap({ "s-other": { blank: true } }), bind) === null);
+	check("工作区解析不出来时不算（列表未就绪不误判）",
+		api.ownedBlankIn(undefined, snap({ "s-other": { blank: true } }), bind) === null);
 }
 
 console.log(failures === 0 ? "\nreconcile: 全部通过" : `\nreconcile: ${failures} 项失败`);
