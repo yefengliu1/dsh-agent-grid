@@ -9,7 +9,7 @@
 [![npm](https://img.shields.io/npm/v/dsh-agent-grid?style=flat-square&color=3A7284)](https://www.npmjs.com/package/dsh-agent-grid)
 [![license](https://img.shields.io/badge/license-MIT-26221C?style=flat-square)](#license)
 [![dsh-plugin](https://img.shields.io/badge/dsh--plugin-community%20topic-9A6B50?style=flat-square)](https://github.com/topics/dsh-plugin)
-[![DSH](https://img.shields.io/badge/DSH-0.1.5--rc.2-7FB4C4?style=flat-square)](#兼容性)
+[![DSH](https://img.shields.io/badge/DSH-0.2.0--rc.2-7FB4C4?style=flat-square)](#兼容性)
 
 ---
 
@@ -96,9 +96,20 @@ dsh plugin --profile web add dsh-agent-grid
 
 ## 兼容性
 
-- 验证于 **DSH 0.1.5-rc.2**（`@deepseek-ai/dsh`）
+- 需要 **DSH ≥ 0.2.0-rc.2**（`@deepseek-ai/dsh`），验证于 0.2.0-rc.2 —— 还在 0.1.5-rc.2 请装 `dsh-agent-grid@0.1.3`
 - 只消费宿主的设计 token，不写死配色 —— 因此**任何 DSH 主题都能作用于它**
 - 与 DeepSeek 官方无隶属关系（Not affiliated with DeepSeek）
+
+### 移植笔记（0.1.5-rc.2 → 0.2.0-rc.2）
+
+0.2.0-rc.2 上客户端插件有**四种静默死法**，每种一个成因。移植任何 DSH 客户端插件前都值得先看这张表：
+
+| 你看到的现象 | 成因 | 修法 |
+| --- | --- | --- |
+| 插件行被悄悄禁用，只有 stderr 里有一行 | 兼容闸门要求每个 `@deepseek-ai/dsh*` peer 范围满足运行版本 | 放宽 peer 范围 |
+| 宿主半边 Running，UI 上什么都没有 | `dsh-client-modules` 用行的 specifier 去匹配包自己的 `name`，不一致则客户端半边永不注册 | 按真实包名挂载 |
+| `duplicate factory registration` + `loaded without registering` | 构建产物 `lib/client.js` 把插件 id 硬编码在 `__ModuleLoader__.load({ id })` 里 | 任何改名后都重建 bundle |
+| 启动时 `pending (waiting for service: …)` | `settingsScope` 被移除；`sessions.open()` 同样被移除 | `ctx.configForms.get(ns)` / `uiWorkspace.openSession(id)` |
 
 ## 配合主题
 

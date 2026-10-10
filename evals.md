@@ -498,12 +498,12 @@ if (pendingSeat.cwd !== null && summary.cwd !== pendingSeat.cwd) return;
 - **判定**：`manual-device` ｜ **Gating**：必过
 - **备注**：**这是正确行为，不是缺陷** —— 无主的会话本来就不该有席位徽章（§1.3 A2）。真机复核时的现场正是"对话头无徽章 + 看板 `activeIndex = -1`"，两者一致 ⇒ 反查逻辑工作正常。
 
-#### HP-SIDE-04 · 无 `settings` 服务时降级为本地开关
+#### HP-SIDE-04 · 无 `configForms` 服务 / 命名空间未被服务时降级为本地开关
 
 - **Source**：`README.zh.md` 逃生开关段（"降级为本地开关，行内提示改为「当前无法持久化，重启后复原」"）、`localChoice` / `sidebarScope`
 - **Expected**：切换仍**立即**生效；行内提示文案变为「（当前无法持久化，重启后复原）」；重启后复原为默认
 - **判定**：`manual-device` ｜ **Gating**：监控
-- **可发性**：`settingsScope` 注入可能拿不到（决策注释："部署里没有 settings 服务时"）。
+- **可发性**：`configForms` 注入可能拿不到、或该命名空间未被服务（快照 `status !== "ready"`）—— 0.2.0-rc.2 起 `settingsScope` 改名为 `ctx.configForms.get(ns)`。
 
 #### NC-SIDE-01 · 切回默认**不需要**刷新页面
 
@@ -599,7 +599,7 @@ if (pendingSeat.cwd !== null && summary.cwd !== pendingSeat.cwd) return;
 
 - [x] 顶部有 conformance-only 声明（§0.1）
 - [x] 每条 case 有 Source（无 Source 的已删）
-- [x] 容错 / 降级类 case 写了「可发性」依据（`blank`、`pickDirectory`、`seatWorkspace`、`settingsScope`、`workspaces.create`）
+- [x] 容错 / 降级类 case 写了「可发性」依据（`blank`、`pickDirectory`、`seatWorkspace`、`configForms`、`workspaces.create`）
 - [x] Expected 只用系统边界词汇（看到 / 不出现 / 主栏显示 / 刷新后 / 徽章）；**实现结构断言已剥离**（例如"走哪个 early return"只写在 §1 的候选根因表里，且明确标为"不作为 eval 断言"）
 - [x] 已扫 Expected 里的代码标识符：保留的标识符只出现在 **Source** 与「落点」列（`claimPendingSeat`、`reconcile`、`SEATS`…），不进入 Expected
 - [x] 先枚举本文件真实前缀（`HP`/`BV`/`NC`/`AD`/`RT`/`VIS` 六种，全量枚举而非照抄模板）再算占比：`BV+AD = 21%` < 30%

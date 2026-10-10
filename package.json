@@ -53,13 +53,13 @@
     "@deepseek-ai/schemastery": "^3.18.2"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-api-session-controller": "^0.1.5-rc.2",
-    "@deepseek-ai/dsh-client-store": "^0.1.5-rc.2",
-    "@deepseek-ai/dsh-client-ui-layout": "^0.1.5-rc.2",
-    "@deepseek-ai/dsh-client-ui-session": "^0.1.5-rc.2",
-    "@deepseek-ai/dsh-client-ui-settings": "^0.1.5-rc.2",
-    "@deepseek-ai/dsh-client-ui-sidebar": "^0.1.5-rc.2",
-    "@deepseek-ai/dsh-client-ui-slots": "^0.1.5-rc.2",
+    "@deepseek-ai/dsh-api-session-controller": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-store": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-layout": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-session": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-sidebar": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.2.0-rc.2",
     "react": "^18.2.0"
   }
 }

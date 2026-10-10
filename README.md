@@ -9,7 +9,7 @@
 [![npm](https://img.shields.io/npm/v/dsh-agent-grid?style=flat-square&color=3A7284)](https://www.npmjs.com/package/dsh-agent-grid)
 [![license](https://img.shields.io/badge/license-MIT-26221C?style=flat-square)](#license)
 [![dsh-plugin](https://img.shields.io/badge/dsh--plugin-community%20topic-9A6B50?style=flat-square)](https://github.com/topics/dsh-plugin)
-[![DSH](https://img.shields.io/badge/DSH-0.1.5--rc.2-7FB4C4?style=flat-square)](#compatibility)
+[![DSH](https://img.shields.io/badge/DSH-0.2.0--rc.2-7FB4C4?style=flat-square)](#compatibility)
 
 ---
 
@@ -96,9 +96,20 @@ This plugin **replaces the host's `sidebar.workspaces` slot** (shadowing the bui
 
 ## Compatibility
 
-- Verified on **DSH 0.1.5-rc.2** (`@deepseek-ai/dsh`)
+- Requires **DSH ≥ 0.2.0-rc.2** (`@deepseek-ai/dsh`); verified on 0.2.0-rc.2 — on 0.1.5-rc.2 install `dsh-agent-grid@0.1.3`
 - Consumes only host design tokens and hard-codes no colours — so **any DSH theme can drive it**
 - Not affiliated with DeepSeek
+
+### Porting notes (0.1.5-rc.2 → 0.2.0-rc.2)
+
+Four ways a DSH client plugin dies **silently** on 0.2.0-rc.2, one cause each. Worth reading before porting any client plugin:
+
+| What you see | Cause | Fix |
+| --- | --- | --- |
+| The row is quietly disabled; only a stderr line says so | The compatibility gate requires every `@deepseek-ai/dsh*` peer range to satisfy the running DSH version | Widen the peer ranges |
+| Host half runs, the UI shows nothing | `dsh-client-modules` matches the row's specifier against the package's own `name`; on a mismatch the client half never registers | Mount by the real package name |
+| `duplicate factory registration` + `loaded without registering` | The built `lib/client.js` hard-codes the plugin id inside `__ModuleLoader__.load({ id })` | Rebuild the bundle after any rename |
+| `pending (waiting for service: …)` at boot | `settingsScope` was removed; `sessions.open()` was removed too | `ctx.configForms.get(ns)` / `uiWorkspace.openSession(id)` |
 
 ## With a theme
 
