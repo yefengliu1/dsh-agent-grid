@@ -64,6 +64,7 @@
   },
   "scripts": {
     "test": "node tests/reconcile.mjs && node tests/contract.mjs",
-    "prepublishOnly": "npm test"
+    "prepublishOnly": "npm test",
+    "test:ui": "node tests/ui-smoke.mjs"
   }
 }

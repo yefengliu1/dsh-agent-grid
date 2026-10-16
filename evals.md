@@ -650,8 +650,36 @@ if (pendingSeat.cwd !== null && summary.cwd !== pendingSeat.cwd) return;
 2. 每个修复的 commit message 里写明「哪一层能拦住它」；拦不住的，写明为什么拦不住（结构上限就写进 §8 盲区）。
 3. 修视觉/交互 bug 时，顺手把可量化的部分搬进 `tests/contract.mjs`（例：侧栏填充透明度上限、文字对比度下限）。
 
-### 已知缺口（下一步）
+### UI 冒烟层（2026-10-16 当天补上）
 
-- **UI 冒烟层缺失**：`is-active` 恰好一张卡、选中态与「待答」不共用通道、侧栏左右内缩对称、
-  卡片半透明 —— 这四条今天都是真机肉眼发现的，都需要一个无头浏览器层（Playwright）才能自动化。
-- 没有 CI：目前门禁只在 `npm publish` 这一条路径上；推 GitHub 不跑测试。
+`tests/ui-smoke.mjs` —— 无头浏览器连到**正在跑的** GUI，断言四条纯 Node 看不见的渲染事实：
+
+| 断言 | 抓的是哪次失败 |
+| --- | --- |
+| 卡片左右内缩对称（±1.5px）+ 表头与卡片同沿 | 宿主的负 margin 把 `.dsx-root` 放大成 左 16 / 右 4 |
+| 点击席位后**恰好一张** `is-active` | rc.2 列表 store 没有 `current`，选中态一帧都不亮 |
+| 选中卡：强调色左色条 + 强调色边框 + 强调色姓名；非当前席待答才用朱砂边框 | 两条状态共用通道、且用每席身份色 |
+| 主题开着时所有卡面 alpha < 1 | 不透明卡面把山水全挡住 |
+
+跑法：`npm run test:ui`（`DSH_UI_URL` / `SMOKE_SHOT` / `SMOKE_REQUIRE_ACTIVE=1` 可覆盖）。
+mutation 验过：删掉 `.dsx-card.is-active::before` → 色条那条立刻红。
+**它已经赚回成本**：第一次跑就抓到「镜像把用户记住的变体写回旧方案」这个真回归。
+
+### CI（2026-10-16 当天补上）
+
+`.github/workflows/ci.yml`，两个 job：
+
+- `test`：`npm install` + `npm test`（纯 Node，秒级）。
+- `ui-smoke`：**真起一个 dsh** —— 手工搭一个 `ci` profile（不装 pnpm，等价于 `dsh plugin add` 干的事）、
+  起 `dsh --profile ci --port 3987 --no-open`、解析日志里的入口地址，再跑 UI 冒烟；截图作为 artifact 存档。
+
+**CI 覆盖到什么程度（别误读）**：全新 profile 里没有本地存储，所以断言的是
+「插件加载 → 八席渲染 → 内缩对称 → 选中态恰好一张 → 状态通道不串」这些**与个人数据无关**的事实；
+主题开着时的卡面透明度那条会因为「该 profile 没装主题」而跳过。宿主的**行为漂移**
+（字段改名、事件换形状）由 `tests/contract.mjs` 守，不由冒烟守 —— 两者互补，缺一不可。
+
+### 仍然没有的
+
+- **跨宿主版本的回归**：CI 钉住 `DSH_VERSION=0.2.0-rc.2`。升 dsh 时要手动改一行并重跑，
+  没有「对 latest 也跑一遍」的定时任务。
+- **真机时序类**：§8 盲区里的那些（HMR 重挂那一瞬、多窗口、真实按键节奏）依旧只能人看。
