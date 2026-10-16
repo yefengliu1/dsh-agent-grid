@@ -485,8 +485,13 @@ try {
 				}),
 			};
 		});
-		check(`窄轨渲染 8 个席位按钮（实际 ${rail.buttons}），且恰好一个选中（实际 ${rail.active}）`,
-			rail.buttons === 8 && rail.active === 1);
+		check(`窄轨渲染 8 个席位按钮（实际 ${rail.buttons}）`, rail.buttons === 8);
+		// 至多一个选中：全新 profile（CI）没有任何会话 → 一个都不选中也是对的，
+		// 所以这里不能要求"恰好一个"（本地真机上才用 SMOKE_REQUIRE_ACTIVE=1 收紧）。
+		check(`窄轨选中态至多一个（实际 ${rail.active}）`, rail.active <= 1);
+		if (REQUIRE_ACTIVE && rail.active !== 1) {
+			check("窄轨必须有一席选中（SMOKE_REQUIRE_ACTIVE=1）", false, "当前会话不属于任何席位？");
+		}
 		check("窄轨里姓名走 title（窄轨是「看得见谁在等」而不是「看得见全名」）",
 			rail.titles.every((t) => t.split(" · ")[0].length > 0), JSON.stringify(rail.titles.slice(0, 3)));
 		const chips = rail.chips.filter((c) => c !== null);
