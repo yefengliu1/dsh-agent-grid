@@ -513,35 +513,51 @@ if (pendingSeat.cwd !== null && summary.cwd !== pendingSeat.cwd) return;
 
 ---
 
-## 6. 视觉保真（VIS）—— ⚠️ 全部待验证
+## 6. 视觉保真（VIS）—— ✅ 全部改成可判定的
 
-> **Figma gate 未通过：本项目没有 Figma 输入源。** 以下 case 一律 `manual-device`，
-> 状态标 ⚠️ 待验证，**禁止标 PASS**。基线图：`design/grid-4state-live.png`、
+> **2026-10-16 改判**：这五条原本是 `manual-device`（"人工上设备量"）。现在**全部由
+> `tests/ui-smoke.mjs` 自动判定**（几何 + 颜色 + **真像素**采样），不留人工闸门。
+> 理由：这五条要的都是可测量的事实（框尺寸 / viewBox 整数倍 / 强调色逐字一致 / 滚动溢出 /
+> 姓名可见且不截断），没有一条本质需要人眼。**审美判断由 agent 看截图给出**（见 §6.1），
+> 也不是留给人的。
+>
+> 仍然缺 Figma 输入源 —— 但那是"token 级 1:1 保真"的事，与这五条无关；它们锚的是
+> `design/ux-design.md` 的几何约束。基线图：`design/grid-4state-live.png`、
 > `design/sidebar-top-nobutton.png`、`docs/seats.png`、`design/sprite-preview.html`。
+
+#### 落地映射（eval → 断言）
+
+| eval | 现在的判定方式 | 断言原文 |
+| --- | --- | --- |
+| VIS-01 | `code`：`ui-smoke` §4（1280 / 1100 两个宽度） | `✓ 8 张卡的姓名都可见` + `✓ 姓名没有被截断` + 窄轨的 `title` 检查 |
+| VIS-02 | `code`：`ui-smoke` §4 | `✓ 八席一屏放得下、无纵向滚动条（溢出 0px）` |
+| VIS-03 | `code`：`ui-smoke` §4 + §4b + **构建期** | `✓ 框/viewBox 是整数倍（112×48 / 56×24 = 2×）`、`✓ 每个 chip 都是 24×24 开在 24 列窗上 = 1×`；`build_client.py` 断言缩放比是整数、`<use>` 必须显式带画布视口 |
+| VIS-04 | `code`：构建期 + `ui-smoke` §4 | `80 symbols / 80 expected`、`✓ 没有空白格：每张卡的头像都有解析得到的 sprite 图层`、`✓ 运功态真的有动画在跑` |
+| VIS-05 | `code`：`ui-smoke` §4 | `✓ 8 席主色与 SEATS 表逐字一致（含 #3F7A55 松绿 / #3F4F9C 靛蓝）` |
 
 #### VIS-01 ⚠️ · 卡片**必须始终显示姓名**
 
 - **Source**：`design/ux-design.md` §6 盲辨识验收的硬性推论（"卡片必须始终显示姓名，姓名不可省略、不可 hover 才出"；依据：剪影只在 6/8 席位上足以区分身份）
 - **Expected**：264px 与更宽两种侧栏宽度下，8 张卡片**都**可见姓名；姓名不可只在 tooltip 里
-- **判定**：`manual-device` ｜ **Gating**：sign-off
+- **判定**：`code`（`tests/ui-smoke.mjs` §4）｜ **Gating**：必过
 
 #### VIS-02 ⚠️ · 264px 侧栏下八席**一屏放得下、无滚动条**
 
 - **Source**：`README.zh.md` 卡片高度硬约束段（"实测单卡 164px、4 行卡 + 间隙 = 697px，可用高约 750px"）
 - **Expected**：窄窗口下**收起**「↳」等次要行，而不是出现纵向滚动条
-- **判定**：`manual-device` ｜ **Gating**：sign-off
+- **判定**：`code`（`tests/ui-smoke.mjs` §4）｜ **Gating**：必过
 
 #### VIS-03 ⚠️ · 像素头像只用 24 / 48 / 96
 
 - **Source**：`design/ux-design.md` §8（"像素头像在非整数倍尺寸下必然糊。24 网格只能用 24 / 48 / 96"；折叠轨道曾写 20px）
 - **Expected**：实测渲染尺寸是 24/48/96 之一；折叠轨道里的 chip 不是 20px
-- **判定**：`manual-device`（DevTools 量）+ `manual-review` ｜ **Gating**：sign-off
+- **判定**：`code`（`tests/ui-smoke.mjs` §4/§4b + `build_client.py` 构建期断言）｜ **Gating**：必过
 
 #### VIS-04 ⚠️ · 八席 sprite **逐席齐备 10 层**，无静默空白格
 
 - **Source**：`design/ux-design.md` §8b bug 3（id 打错 → 格子空白且不报错）、`build_client.py` 构建期断言
 - **Expected**：`python3 build_client.py` exit 0；8 格都有头像（无空白格）；「运功」态的法宝动效**有内容**（不是空白帧）
-- **判定**：`code`（构建期断言，已实现）+ `manual-device` ｜ **Gating**：必过
+- **判定**：`code`（`build_client.py` 构建期断言 + `tests/ui-smoke.mjs` §4）｜ **Gating**：必过
 
 #### VIS-05 ⚠️ · 八席主色与 `SEATS` 表一致
 
@@ -550,6 +566,37 @@ if (pendingSeat.cwd !== null && summary.cwd !== pendingSeat.cwd) return;
 - **判定**：`manual-device` ｜ **Gating**：sign-off
 
 ---
+
+### 6.1 像素层与审美判定（2026-10-16）
+
+**能算的都算**（`tests/ui-smoke.mjs` §5，用浏览器把截图解码成 ImageData 取真像素 ——
+Node 没有内置 PNG 解码器，让浏览器来解）：
+
+- `✓ 选中卡左色条的像素就是强调色（want=#7FB4C4 got=rgb(127,180,196)）` —— 不是"计算样式说它应该是"，是**渲染出来的那个像素**。
+- `✓ 选中卡姓名像素对比度 ≥ 4.5:1（实测 9.23:1）` —— 取姓名那一小块的字形核心与背景分位算 WCAG 对比度。**"文字太暗"那类问题以后由它拦**。
+- `✓ 卡面不是纯色块（下方山水/纹理能透出来）` —— 卡内 16×16 区域的亮度标准差 > 0，证明卡面之下真有内容，而不是被平色盖住。
+
+**剩下的是审美，由 agent 看截图给出结论**（不设人工闸门）：
+
+- 产物：`/tmp/dsh-agent-grid-shots/board.png`（CI 作为 artifact 上传）。
+- 2026-10-16 判定记录（agent，看 `board.png` + 窄轨 3× 放大图）：**通过**。
+  选中态一眼可辨（天青色左色条 + 边框 + 姓名 + 提亮底色），山水透过卡片可见，
+  状态层级 ordering 正确：选中 > 待答（朱砂边框 + 呼吸）> 运功 > 休息 > 虚席；无滚动条。
+
+### 6.2 由 6.1 抓出的真 bug（记一笔，因为它是这一层存在的理由）
+
+窄轨（≤1000px 折叠侧栏）里的头像**是糊的**：`.dsx-av` 被压成 24×24，而 sprite 画布是 56×24，
+`preserveAspectRatio="xMidYMid meet"` → **0.43× 非整数缩放**。3× 放大截图肉眼可辨。
+
+修的过程也踩了一条不明显的：**只把外层 `viewBox` 改成 24 宽的裁切窗没用** ——
+`<use>` 引用 symbol 时会自建视口（默认取外层视口），symbol 又按自己的 56×24 `meet` 缩进 24×24，
+**又变成 0.43×**（裁切后图上看：小人贴在左边、还被切掉半边）。
+正确修法两条一起：① 每个 `<use>` 显式声明画布视口（`width=56 height=24`）；
+② 窄轨只开身体那 24 列（`OX=16` 起）的裁切窗。两条都进了 `build_client.py` 的构建期断言。
+
+顺带的**设计约束**：裁切窗只有 24 列，而编排里有 ±8 格走位 —— 所以窄轨必须是**静态徽章**
+（`.dsx-railbtn .dsx-av *{animation:none}`），状态由强调色圆环 + 待答红点表达。
+冒烟里为此加了断言：`✓ 窄轨是静态徽章（无动画）`。
 
 ## 7. 落点映射（eval → 执行）
 

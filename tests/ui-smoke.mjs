@@ -18,7 +18,7 @@
  * （开发者机器上通常已经有，不必再下一次浏览器）。
  */
 import { createRequire } from "node:module";
-import { existsSync, readdirSync, mkdirSync } from "node:fs";
+import { existsSync, readdirSync, mkdirSync, readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import os from "node:os";
@@ -80,6 +80,71 @@ async function dismissOverlays(page) {
 		await page.keyboard.press("Escape").catch(() => {});
 		await page.waitForTimeout(200);
 	}
+}
+
+
+// ---- 真像素采样 -------------------------------------------------------------
+/**
+ * Node 没有内置 PNG 解码器 —— 让**浏览器**去解码：把截图当 data URL 画进 canvas，
+ * 再读 ImageData。这样拿到的就是最终渲染出来的像素，而不是"计算样式说它应该是"。
+ * 返回 { points, region } 两个采样器：点采样 + 区域统计（对比度/方差）。
+ */
+async function makeSampler(context) {
+	const page = await context.newPage();
+	await page.setContent('<body style="margin:0;background:#000"><canvas id="c"></canvas></body>');
+	return async (pngBuffer, request) => page.evaluate(async ({ dataUrl, request }) => {
+		const img = new Image();
+		img.src = dataUrl;
+		await img.decode();
+		const canvas = document.getElementById("c");
+		canvas.width = img.naturalWidth;
+		canvas.height = img.naturalHeight;
+		const ctx = canvas.getContext("2d", { willReadFrequently: true });
+		ctx.drawImage(img, 0, 0);
+		const lum = ([r, g, b]) => {
+			const f = (v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+			return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+		};
+		/** 坐标必须是有限数：不然 getImageData 会抛「Value is not of type long」这种看不懂的错。 */
+		const px = (v) => {
+			const n = Number(v);
+			if (!Number.isFinite(n)) throw new Error("采样坐标不是数字: " + JSON.stringify(v));
+			return Math.round(n);
+		};
+		const out = { size: [canvas.width, canvas.height] };
+		if (request.points) {
+			out.points = request.points.map(([x, y]) => {
+				const d = ctx.getImageData(px(x), px(y), 1, 1).data;
+				return [d[0], d[1], d[2], d[3]];
+			});
+		}
+		if (request.regions) {
+			out.regions = request.regions.map((r) => {
+				const x = Math.max(0, px(r.x)); const y = Math.max(0, px(r.y));
+				const w = Math.max(1, px(r.w)); const h = Math.max(1, px(r.h));
+				const data = ctx.getImageData(x, y, w, h).data;
+				const lums = [];
+				let rs = 0, gs = 0, bs = 0, n = 0;
+				for (let i = 0; i < data.length; i += 4) {
+					lums.push(lum([data[i], data[i + 1], data[i + 2]]));
+					rs += data[i]; gs += data[i + 1]; bs += data[i + 2]; n += 1;
+				}
+				lums.sort((a, b) => a - b);
+				const at = (q) => lums[Math.min(lums.length - 1, Math.floor(q * lums.length))];
+				const mean = rs / n / 255 * 0.2126 + gs / n / 255 * 0.7152 + bs / n / 255 * 0.0722;
+				let varSum = 0;
+				for (const l of lums) varSum += (l - mean) * (l - mean);
+				const lo = at(0.01); const hi = at(0.99);
+				return {
+					n, mean: Number(mean.toFixed(4)),
+					std: Number(Math.sqrt(varSum / lums.length).toFixed(4)),
+					lo: Number(lo.toFixed(4)), hi: Number(hi.toFixed(4)),
+					contrast: Number(((hi + 0.05) / (lo + 0.05)).toFixed(2)),
+				};
+			});
+		}
+		return out;
+	}, { dataUrl: "data:image/png;base64," + pngBuffer.toString("base64"), request });
 }
 
 let failures = 0;
@@ -148,7 +213,9 @@ if (browser === undefined) {
 	console.error("修：npx playwright install chromium（或设 PLAYWRIGHT_ROOT 指向已装浏览器的那份）");
 	process.exit(1);
 }
-const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+// 显式建 context：采样器要用它再开一个页面去解码 PNG（browser.newPage 的隐式 context 不给开新页）。
+const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+const page = await context.newPage();
 try {
 	const res = await page.goto(URL_, { waitUntil: "domcontentloaded" });
 	check(`打开 GUI（HTTP ${res === null ? "?" : res.status()}）`, res !== null && res.status() < 400, URL_);
@@ -185,6 +252,7 @@ try {
 				anim: cs.animationName,
 				rail: before.content === "none" ? null : { w: before.width, bg: before.backgroundColor },
 				brand,
+				accent: cs.getPropertyValue("--dsx-accent").trim(),
 				errorColor: cs.getPropertyValue("--dsw-alias-state-error-primary").trim(),
 			};
 		};
@@ -222,6 +290,9 @@ try {
 			}
 		}
 	}
+
+	const sampler = await makeSampler(context);
+	const SHOTS = process.env.SMOKE_SHOTS ?? "/tmp/dsh-agent-grid-shots";
 
 	// ---- 1 侧栏内缩对称 ----
 	section("1 侧栏内缩（宿主的负 margin 曾把左右放大成 16 / 4）");
@@ -280,10 +351,213 @@ try {
 			JSON.stringify(opaque.map((c) => [c.name, c.bg])));
 	}
 
-	// ---- 4 存档截图 ----
-	section("4 截图存档");
-	mkdirSync(dirname(SHOT), { recursive: true });
-	await page.screenshot({ path: SHOT });
+	// ---- 4 VIS 断言（原 §6「人工设备验收」全部改成可判定的）----
+	section("4 VIS-01/02/03/05（几何与颜色：不需要人眼）");
+	{
+		// VIS-05：卡片强调色必须与源码里的 SEATS 表逐字一致（松绿 vs 靛蓝必须可分辨）
+		const seatsSrc = readFileSync(join(here, "..", "src", "client.template.js"), "utf8");
+		const expected = [...seatsSrc.matchAll(/\{ id: "(\w+)",\s+key: "[^"]+", name: "([^"]+)", role: "[^"]+", color: "(#[0-9A-Fa-f]{6})"/g)]
+			.map((m) => ({ id: m[1], name: m[2], color: m[3].toUpperCase() }));
+		check("从源码解析出 8 席与各自主色", expected.length === 8, `解析到 ${expected.length} 条`);
+		const rendered = probe.cards.map((c) => ({ name: c.name, accent: (c.accent ?? "").toUpperCase() }));
+		const mismatched = expected.filter((e) => !rendered.some((r) => r.name === e.name && r.accent === e.color));
+		check("8 席主色与 SEATS 表逐字一致（含 #3F7A55 松绿 / #3F4F9C 靛蓝）",
+			mismatched.length === 0, JSON.stringify(mismatched));
+		const greens = probe.cards.filter((c) => (c.accent ?? "").toUpperCase() === "#3F7A55");
+		const blues = probe.cards.filter((c) => (c.accent ?? "").toUpperCase() === "#3F4F9C");
+		check("松绿与靛蓝确实同时在场且是两种颜色",
+			greens.length >= 1 && blues.length >= 1, `绿 ${greens.length} / 蓝 ${blues.length}`);
+
+		// VIS-03：像素头像必须落在 24 网格上 —— 即「框 / viewBox」是**整数倍**。
+		// （形状是 SVG + symbol，不是背景图；只看框尺寸会漏掉"框对但缩放非整数"这种糊法。）
+		const avatars = await page.evaluate(() => {
+			const read = (el, where) => {
+				if (el === null) return null;
+				const r = el.getBoundingClientRect();
+				const vb = (el.getAttribute("viewBox") ?? "").split(/\s+/).map(Number);
+				return {
+					where,
+					box: [Math.round(r.width), Math.round(r.height)],
+					viewBox: vb.join(" "),
+					scale: vb[2] > 0 ? [r.width / vb[2], r.height / vb[3]] : null,
+					uses: [...el.querySelectorAll("use")].map((u) => [u.getAttribute("width"), u.getAttribute("height")]),
+					anims: el.getAnimations({ subtree: true }).length,
+				};
+			};
+			return {
+				card: read(document.querySelector(".dsx-card .dsx-av"), "卡片舞台"),
+				badge: read(document.querySelector(".dsx-badge .dsx-av"), "对话头徽章"),
+			};
+		});
+		for (const [where, a] of Object.entries(avatars)) {
+			if (a === null) { skip(`${where}的整数倍缩放`, "当前页面没有这个元素"); continue; }
+			const [sx, sy] = a.scale ?? [0, 0];
+			check(`${where}：框/viewBox 是整数倍（${a.box.join("×")} / viewBox ${a.viewBox} = ${sx}×${sy}）`,
+				Number.isInteger(sx) && sx === sy && sx >= 1, JSON.stringify(a));
+			check(`${where}：每个 <use> 都显式声明画布视口（否则 symbol 会按外层视口重缩放）`,
+				a.uses.length > 0 && a.uses.every(([w, h]) => Number(w) > 0 && Number(h) > 0), JSON.stringify(a.uses));
+		}
+		check("卡片舞台必须是画布 2×（112×48）",
+			avatars.card !== null && avatars.card.box[0] === 112 && avatars.card.box[1] === 48,
+			JSON.stringify(avatars.card && avatars.card.box));
+
+		// VIS-04（UI 半边）：没有空白格 + 运功态真的有动画在跑
+		const spriteUI = await page.evaluate(() => [...document.querySelectorAll(".dsx-card")].map((c) => {
+			const av = c.querySelector(".dsx-av");
+			const cls = [...c.classList];
+			const uses = av === null ? [] : [...av.querySelectorAll("use")];
+			return {
+				name: (c.querySelector(".dsx-name")?.textContent ?? "").trim(),
+				working: cls.includes("is-working"),
+				uses: uses.length,
+				resolved: uses.filter((u) => document.querySelector(u.getAttribute("href")) !== null).length,
+				anims: av === null ? 0 : av.getAnimations({ subtree: true }).length,
+			};
+		}));
+		check("没有空白格：每张卡的头像都有解析得到的 sprite 图层",
+			spriteUI.length === 8 && spriteUI.every((s) => s.uses >= 2 && s.resolved === s.uses),
+			JSON.stringify(spriteUI.filter((s) => s.uses < 2 || s.resolved !== s.uses)));
+		const workingUI = spriteUI.filter((s) => s.working);
+		if (workingUI.length > 0) {
+			check("运功态真的有动画在跑（不是静止帧）", workingUI.every((s) => s.anims >= 1),
+				JSON.stringify(workingUI));
+		} else {
+			skip("运功态动画", "当前没有运功中的席位");
+		}
+
+		// VIS-01 / VIS-02：两种宽度下姓名都在、不截断，且窄宽度下一屏放得下
+		for (const [w, h] of [[1280, 900], [1100, 800]]) {
+			await page.setViewportSize({ width: w, height: h });
+			await page.waitForTimeout(400);
+			const m = await page.evaluate(() => {
+				const cards = [...document.querySelectorAll(".dsx-card")];
+				const names = cards.map((c) => {
+					const el = c.querySelector(".dsx-name");
+					if (el === null) return null;
+					const cs = getComputedStyle(el);
+					return {
+						text: (el.textContent ?? "").trim(),
+						visible: cs.display !== "none" && cs.visibility !== "hidden" && el.getBoundingClientRect().width > 0,
+						clipped: el.scrollWidth > el.clientWidth + 1,
+					};
+				});
+				const grid = document.querySelector(".dsx-grid");
+				return {
+					names,
+					overflowY: grid === null ? null : grid.scrollHeight - grid.clientHeight,
+					gridBox: grid === null ? null : { h: grid.clientHeight, sh: grid.scrollHeight },
+				};
+			});
+			check(`${w}px：8 张卡的姓名都可见`, m.names.length === 8 && m.names.every((n) => n && n.visible && n.text.length > 0),
+				JSON.stringify(m.names.filter((n) => !n || !n.visible || n.text.length === 0)));
+			check(`${w}px：姓名没有被截断（scrollWidth ≤ clientWidth）`,
+				m.names.every((n) => n !== null && !n.clipped), JSON.stringify(m.names.filter((n) => n && n.clipped)));
+			check(`${w}px：八席一屏放得下、无纵向滚动条（溢出 ${m.overflowY}px，收起次要行是设计）`,
+				m.overflowY !== null && m.overflowY <= 1, JSON.stringify(m.gridBox));
+		}
+		await page.setViewportSize({ width: 1280, height: 900 });
+		await page.waitForTimeout(400);
+	}
+
+	// ---- 4b 窄轨模式（≤1000px 时宿主收起侧栏，插件切窄轨）----
+	section("4b 窄轨模式（≤1000px）：1× 裁切 + 静态徽章");
+	{
+		await page.setViewportSize({ width: 900, height: 860 });
+		await page.waitForTimeout(600);
+		const rail = await page.evaluate(() => {
+			const btns = [...document.querySelectorAll(".dsx-railbtn")];
+			return {
+				buttons: btns.length,
+				active: btns.filter((b) => b.classList.contains("is-active")).length,
+				titles: btns.map((b) => b.getAttribute("title") || ""),
+				chips: btns.map((b) => {
+					const chip = b.querySelector(".dsx-av");
+					if (chip === null) return null;
+					const r = chip.getBoundingClientRect();
+					const vb = (chip.getAttribute("viewBox") ?? "").split(/\s+/).map(Number);
+					return {
+						box: [Math.round(r.width), Math.round(r.height)],
+						viewBox: vb.join(" "),
+						scale: vb[2] > 0 ? [r.width / vb[2], r.height / vb[3]] : null,
+						uses: [...chip.querySelectorAll("use")].every((u) => Number(u.getAttribute("width")) > 0),
+						anims: chip.getAnimations({ subtree: true }).length,
+					};
+				}),
+			};
+		});
+		check(`窄轨渲染 8 个席位按钮（实际 ${rail.buttons}），且恰好一个选中（实际 ${rail.active}）`,
+			rail.buttons === 8 && rail.active === 1);
+		check("窄轨里姓名走 title（窄轨是「看得见谁在等」而不是「看得见全名」）",
+			rail.titles.every((t) => t.split(" · ")[0].length > 0), JSON.stringify(rail.titles.slice(0, 3)));
+		const chips = rail.chips.filter((c) => c !== null);
+		check("每个 chip 都是 24×24 开在 24 列窗上 = 1× 整数倍（0.43× 缩放就是糊）",
+			chips.length === 8 && chips.every((c) => c.scale !== null && c.scale[0] === 1 && c.scale[1] === 1),
+			JSON.stringify(chips.slice(0, 2)));
+		check("chip 里的 <use> 都显式声明画布视口（否则 symbol 按外层视口重缩放）",
+			chips.every((c) => c.uses === true));
+		// 裁切窗口只有 24 列，而编排有 ±8 格走位 —— 窄轨必须静态，否则小人走出窗口被切
+		check("窄轨是静态徽章（无动画）：不然走位会把小人切出 24 列窗口",
+			chips.every((c) => c.anims === 0), JSON.stringify(chips.map((c) => c.anims).slice(0, 4)));
+		await page.setViewportSize({ width: 1280, height: 900 });
+		await page.waitForTimeout(500);
+	}
+
+	// ---- 5 像素级视觉断言（矩阵里最接近"人眼"的那一层）----
+	section("5 像素断言（真渲染出来的像素，不是计算样式）");
+	{
+		mkdirSync(SHOTS, { recursive: true });
+		const boardShot = join(SHOTS, "board.png");
+		await page.screenshot({ path: boardShot });
+		const boardPng = readFileSync(boardShot);
+
+		const activeCard = probe.cards.find((c) => c.cls.includes("is-active"));
+		if (activeCard === undefined) {
+			skip("选中卡色条的像素颜色", "当前没有选中卡");
+		} else {
+			const cardClip = { x: activeCard.rect.x, y: activeCard.rect.y, width: activeCard.rect.w, height: activeCard.rect.h };
+			const shot = await page.screenshot({ clip: cardClip });
+			const want = parseColor(activeCard.brand);
+			const got = (await sampler(shot, { points: [[1.5, cardClip.height / 2]] })).points[0];
+			const ok = want !== undefined
+				&& Math.abs(got[0] - want[0]) <= 26 && Math.abs(got[1] - want[1]) <= 26 && Math.abs(got[2] - want[2]) <= 26;
+			check(`选中卡左色条的像素就是强调色（want=${activeCard.brand} got=rgb(${got.slice(0, 3)})）`, ok);
+
+			// 姓名那一行的像素对比度（字形核心 vs 背景）：暗色文字太暗那次就是这么漏的
+			const nameBox = await page.evaluate(() => {
+				const card = document.querySelector(".dsx-card.is-active");
+				const el = card === null ? null : card.querySelector(".dsx-name");
+				if (el === null) return null;
+				const r = el.getBoundingClientRect();
+				return { x: r.x, y: r.y, width: r.width, height: r.height };
+			});
+			if (nameBox === null || nameBox.width < 4 || nameBox.height < 4) {
+				skip("选中卡姓名像素对比度", "量不到姓名元素");
+			} else {
+				const nameShot = await page.screenshot({ clip: nameBox });
+				const st = (await sampler(nameShot, {
+					regions: [{ x: 0, y: 0, w: nameBox.width, h: nameBox.height }],
+				})).regions[0];
+				check(`选中卡姓名像素对比度 ≥ 4.5:1（实测 ${st.contrast}:1）`, st.contrast >= 4.5, JSON.stringify(st));
+			}
+		}
+
+		// 卡片必须透：拿卡片内部的像素跟侧栏背景比，两者不该是同一种平色
+		const anyCard = probe.cards[0];
+		const cardShot = await page.screenshot({
+			clip: { x: anyCard.rect.x, y: anyCard.rect.y, width: anyCard.rect.w, height: anyCard.rect.h },
+		});
+		const inner = (await sampler(cardShot, {
+			regions: [{ x: anyCard.rect.w * 0.35, y: anyCard.rect.h * 0.55, w: 16, h: 16 }],
+		})).regions[0];
+		if (probe.layerOn) {
+			console.log(`  · 卡内 16×16 区域：std=${inner.std}（>0 说明卡面之下有内容，不是纯色块）`);
+			check("卡面不是纯色块（下方山水/纹理能透出来）", inner.std > 0.002, JSON.stringify(inner));
+		} else {
+			// 没装主题时卡面之下本来就是宿主的纯色背景 —— 这条在这里没有意义，别误判成失败。
+			skip("卡面不是纯色块", "宋律主题未启用（卡面之下没有山水可透）");
+		}
+	}
+
 	console.log("  · " + SHOT + "   (playwright: " + launchedWith + ")");
 } finally {
 	await browser.close();
