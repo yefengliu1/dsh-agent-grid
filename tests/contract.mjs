@@ -43,6 +43,7 @@ const DSH_MODULES = process.env.DSH_MODULES
 
 let failures = 0;
 let checks = 0;
+let skipped = 0;
 function check(name, ok, detail = "") {
 	checks += 1;
 	if (ok) {
@@ -51,6 +52,10 @@ function check(name, ok, detail = "") {
 	}
 	failures += 1;
 	console.log("  ✗ " + name + (detail ? "  —— " + detail : ""));
+}
+function skip(name, why) {
+	skipped += 1;
+	console.log("  · " + name + "（跳过：" + why + "）");
 }
 function section(title) {
 	console.log("\n" + title);
@@ -131,7 +136,9 @@ section("B 宿主契约（我们依赖的设施还在不在）");
 {
 	const uiSession = join(DSH_MODULES, "dsh-client-ui-session", "lib", "client.js");
 	if (!existsSync(uiSession)) {
-		check("找到已安装的 dsh-client-ui-session", false, uiSession);
+		// 纯 Node 的 CI job 里不会装 dsh —— 这一层就跳过，而不是判失败。
+		// 真正的把关在 ui-smoke job：那里装了 dsh 并把 DSH_MODULES 指过去，这一层会照跑。
+		skip("宿主契约层", `找不到已安装的 dsh（${DSH_MODULES}）—— 设 DSH_MODULES 指向 <install>/node_modules/@deepseek-ai 即可启用`);
 	} else {
 		const src = readFileSync(uiSession, "utf8");
 		check("uiSession 服务仍在（super(ctx, \"uiSession\")）", /super\(ctx,\s*"uiSession"\)/.test(src));
@@ -178,7 +185,7 @@ section("C 我们自己的源码（不得再读被移除的字段）");
 // ---------------------------------------------------------------- 结果
 console.log(
 	failures === 0
-		? `\ncontract: 全部通过（${checks} 项）`
+		? `\ncontract: 全部通过（${checks} 项${skipped > 0 ? `，跳过 ${skipped} 项` : ""}）`
 		: `\ncontract: ${failures}/${checks} 项失败`,
 );
 process.exit(failures === 0 ? 0 : 1);
