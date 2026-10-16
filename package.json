@@ -61,5 +61,9 @@
     "@deepseek-ai/dsh-client-ui-sidebar": "^0.2.0-rc.2",
     "@deepseek-ai/dsh-client-ui-slots": "^0.2.0-rc.2",
     "react": "^18.2.0"
+  },
+  "scripts": {
+    "test": "node tests/reconcile.mjs && node tests/contract.mjs",
+    "prepublishOnly": "npm test"
   }
 }

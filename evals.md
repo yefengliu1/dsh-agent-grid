@@ -611,3 +611,47 @@ if (pendingSeat.cwd !== null && summary.cwd !== pendingSeat.cwd) return;
 - [x] 人工裁剪（**只减不增**）：构思阶段剔除了 4 条观察点在**代码内部**的候选 —— ①「`reconcile` 返回值形状」②「`stateOf` 分支覆盖」③「`readStore` 兼容旧 v2 格式」④「`emitBindings` 通知次数」。这四条属单测，不属 evals。副作用要说明：`design/ux-design.md` §8b bug 2 提到的"兼容旧格式"因此**在本 suite 里没有任何 case** —— 它只能由单测守。
 - [x] **真机验证（2026-09-23）**：在真实 GUI（`127.0.0.1:3080`，插件以 `link:` 加载、`patchReload: live`）上三步复现了本症状，并验证了修复 —— 同一实验重跑时绑定保留（§1.4）。顺带真机通过：`HP-BIND-01`、`HP-STATE-02`、`HP-SIDE-01`、`NC-SIDE-01`、`RT-BIND-05`。
 - [x] **二次裁剪（2026-09-23，人工复核后）**：**删掉了 `NC-BIND-02`**，并把 `NC-BIND-01` 的作用域收紧到"从八仙发起的动作"。原因：我把"任何时刻当前会话都必须有席位"当成了契约，而它其实是**合法状态**（八席是 8 个固定席位，不是会话列表）—— 这条 case 会把正确行为判成 FAIL，属"为臆测场景写的 case"。同时把 C3、§1.3、`HP-SIDE-03` 的定性一并纠正。
+
+---
+
+## 10. 可执行回归层（2026-10-16 新增）
+
+**为什么加这一节**：一天里同一个插件被**同一类**失败咬了四次 —— 平台换了形状、我们静默瞎掉：
+
+| 失败 | 形态 | 谁该拦住它 |
+| --- | --- | --- |
+| 会话列表 store 的 `current` 没了 | 卡片 `is-active` 一帧都不亮 | 本节的 `tests/contract.mjs` B/C 层 |
+| `tool/result` 的 callId 挪到 `message.toolCallId` | 「待答」清不掉（假阳性）、「结果」行恒空 | 本节 A 层（真机事件 fixture） |
+| 宿主 `Config` 少了 `.volatile()` | settings 不服务该命名空间，选择只能落 localStorage | 主题仓的 `tests/contract.mjs` |
+| DSH 只认 localhost/::1/127.x 为 loopback | 整份 settings 降级 memory、刷新即丢 | 主题仓 §1 持久化链 |
+
+§0 起的 evals 是 **conformance（实现 vs spec）**，spec 里没有"宿主形状"这一项；`tests/reconcile.mjs` 又把 `current` 当**入参**喂进去 —— 纯函数全绿，而生产里那个值根本产不出来。**这正是第一条能藏一整天的原因。**
+
+### 三层的分工与跑法
+
+| 层 | 文件 | 覆盖 | 跑法 |
+| --- | --- | --- | --- |
+| 人工 conformance | `evals.md`（本文件） | 产品行为 / 边界 / 对抗 | 按 §7 落点映射人工执行 |
+| 逻辑回归 | `tests/reconcile.mjs` | 纯函数裁定（绑定/清空/换目录） | `node tests/reconcile.mjs` |
+| **宿主契约** | `tests/contract.mjs` | 投影行为（真机事件）、宿主设施仍在、源码不读已删字段 | `node tests/contract.mjs` |
+
+一条命令：`npm test`（= reconcile + contract）。
+
+### 门禁
+
+- `package.json` 里 `prepublishOnly: npm test` —— **发版前测试不过就发不出去**。
+  今天的 `0.1.4`（Config 少了 `.volatile()`、等于白改）如果是这个门禁下发的，根本到不了 npm。
+- 视觉/交互类改动（卡片态、间距、透明度）目前**没有自动化层**：§6 VIS 全部 `manual-device` 且禁用 PASS。
+  已知缺口，见下。
+
+### 回灌规则（保持这套 suite 是活的）
+
+1. 真机上发现的失败 → 先写一条能复现它的**可执行断言**（`tests/`）或 eval case（本文件），再修。
+2. 每个修复的 commit message 里写明「哪一层能拦住它」；拦不住的，写明为什么拦不住（结构上限就写进 §8 盲区）。
+3. 修视觉/交互 bug 时，顺手把可量化的部分搬进 `tests/contract.mjs`（例：侧栏填充透明度上限、文字对比度下限）。
+
+### 已知缺口（下一步）
+
+- **UI 冒烟层缺失**：`is-active` 恰好一张卡、选中态与「待答」不共用通道、侧栏左右内缩对称、
+  卡片半透明 —— 这四条今天都是真机肉眼发现的，都需要一个无头浏览器层（Playwright）才能自动化。
+- 没有 CI：目前门禁只在 `npm publish` 这一条路径上；推 GitHub 不跑测试。

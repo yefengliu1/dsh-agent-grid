@@ -1,0 +1,46 @@
+{
+ "_note": "真实事件（0.2.0-rc.2 session.v4 日志，2026-10-16），只裁短了 arguments 与结果文本；形状未改。",
+ "events": [
+  {
+   "type": "tool/call",
+   "seq": 542,
+   "time": 1792138188805,
+   "data": {
+    "turn": 1,
+    "step": 75,
+    "callId": "call_00_2y4zpcYvTSp5zAJHc6qJ3207",
+    "name": "ask_user_question",
+    "arguments": "{\"questions\": [{\"id\": \"scope\", \"header\": \"下一步\", \"question\": \"要我现在动手实施哪一层？\"}]}"
+   }
+  },
+  {
+   "type": "tool/result",
+   "seq": 543,
+   "time": 1792138625048,
+   "data": {
+    "turn": 1,
+    "step": 75,
+    "message": {
+     "role": "tool",
+     "source": {
+      "kind": "tool",
+      "callId": "call_00_2y4zpcYvTSp5zAJHc6qJ3207"
+     },
+     "toolCallId": "call_00_2y4zpcYvTSp5zAJHc6qJ3207",
+     "content": [
+      {
+       "type": "text",
+       "text": "{\"answers\":[{\"id\":\"scope\",\"selected\":[\"只做 Layer 0\"]}]}"
+      }
+     ],
+     "isError": false,
+     "id": "fixture-result-id"
+    }
+   },
+   "sourceEventSeqs": [
+    542
+   ],
+   "surfaceOp": "append"
+  }
+ ]
+}
