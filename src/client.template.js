@@ -736,8 +736,14 @@ window.__ModuleLoader__.load({
 
 		// ---- 样式 ---------------------------------------------------------------
 		const CSS = `
-.dsx-root{display:flex;flex-direction:column;gap:8px;min-height:0;height:100%;padding:2px 4px 8px;overflow-y:auto;}
-.dsx-head{display:flex;align-items:center;justify-content:space-between;padding:0 2px;}
+/* 侧栏内缩：宿主给 region 用了「左 −4 / 右 −12」的负 margin 把内容贴到侧栏边缘
+   （见 .hHd-Xa_regionArea 的 margin:0 -12px 0 -4px），于是 .dsx-root 原来的
+   padding:2px 4px 8px 会被放大成「左 16 / 右 4」——右边卡片几乎贴着边缘。
+   实测侧栏 280：region 内容盒 12..280，所以这里左 0 / 右 12 → 卡片落在 12..268，
+   左右各 12，与宿主自己的行（Plugins 行 14..266）同一量级且对称。 */
+.dsx-root{display:flex;flex-direction:column;gap:8px;min-height:0;height:100%;padding:2px 12px 8px 0;overflow-y:auto;}
+/* 表头跟卡片同一左右沿（原来多 2px，标题和第一列卡片对不齐）。 */
+.dsx-head{display:flex;align-items:center;justify-content:space-between;padding:0;}
 .dsx-title{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary,#8B8478);}
 .dsx-count{font-size:10px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary,#8B8478);
   border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.12));border-radius:999px;padding:1px 7px;}
@@ -750,19 +756,26 @@ window.__ModuleLoader__.load({
 /* gap 3→2 / padding 8,7→6,6：给 48px 舞台让出的竖向预算。
    算过最坏情况（八席全满、每席 5 行：工具 + 想2行 + ↳ + 说2行）：
    单卡 160 × 4 行 + 3×5 = 655，加表头 26 = 681，860 高视口下可用 704 —— 不滚动。 */
+/* 卡面留 14% 透明度：在「表面半透明、山水在后面」的主题（宋律）里，
+   整块不透明的看板会把侧栏背景全挡掉 —— 用户看到的就是「侧栏看不到背景」。
+   86% 是折中：山水透得过来，卡面上的 9-10px 小字仍压在一层稳定底色上。
+   color-mix 是宿主自己也在用的写法（ui-layout 的侧栏渐变就用了它）。 */
 .dsx-card{position:relative;display:flex;flex-direction:column;align-items:stretch;gap:2px;
   padding:6px 6px;border-radius:12px;cursor:pointer;font:inherit;text-align:left;
-  background:var(--dsw-alias-bg-layer-1,#FBFAF6);
+  background-color:color-mix(in srgb, var(--dsw-alias-bg-layer-1,#FBFAF6) 86%, transparent);
   border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.12));
   color:var(--dsw-alias-label-primary,#26221C);
-  transition:background .12s ease,border-color .12s ease,transform .12s ease;}
-.dsx-card:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.06));transform:translateY(-1px);}
+  transition:background-color .12s ease,border-color .12s ease,transform .12s ease;}
+/* hover 用 background-image 叠一层染色，而不是把 background-color 整个换掉 ——
+   换掉的话卡面会在悬停瞬间变全透明，小字直接坐落在山水上。 */
+.dsx-card:hover{background-image:linear-gradient(var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.06)),var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.06)));transform:translateY(-1px);}
 .dsx-card:active{transform:translateY(0);}
 .dsx-card.is-active{border-color:var(--dsx-accent);
-  background:var(--dsw-specific-sidebar-nav-item-active,#E7E3D8);
+  background-color:color-mix(in srgb, var(--dsw-specific-sidebar-nav-item-active,#E7E3D8) 88%, transparent);
   box-shadow:inset 0 0 0 1px var(--dsx-accent);}
 .dsx-card.is-empty{opacity:.55;cursor:default;}
-.dsx-card.is-empty:hover{transform:none;background:var(--dsw-alias-bg-layer-1,#FBFAF6);}
+.dsx-card.is-empty:hover{transform:none;background-image:none;
+  background-color:color-mix(in srgb, var(--dsw-alias-bg-layer-1,#FBFAF6) 86%, transparent);}
 .dsx-card.is-empty .dsx-av{filter:grayscale(1);}
 
 /* ── 小人舞台：56×24 逻辑画布 @2× 整数放大 = 112×48 ───────────────────────
