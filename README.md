@@ -6,6 +6,7 @@
 
 [中文](README.zh.md) ｜ **English**
 
+[![CI](https://github.com/yefengliu1/dsh-agent-grid/actions/workflows/ci.yml/badge.svg)](https://github.com/yefengliu1/dsh-agent-grid/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/dsh-agent-grid?style=flat-square&color=3A7284)](https://www.npmjs.com/package/dsh-agent-grid)
 [![license](https://img.shields.io/badge/license-MIT-26221C?style=flat-square)](#license)
 [![dsh-plugin](https://img.shields.io/badge/dsh--plugin-community%20topic-9A6B50?style=flat-square)](https://github.com/topics/dsh-plugin)
