@@ -40,23 +40,24 @@ Deliberately **not collapsed into one field**, because their rates of change and
 | **Activity** | working / resting / awaiting answer / awaiting approval | high | the agent |
 | **Context** | empty / in use / near limit | medium | the system |
 
-Key consequence: **"resting" ≠ "vacant"**. Resting means "has an identity, is ready, is not working"; vacant means "this slot has never been commissioned". A bot can perfectly well be "resting but 87% context-full" — the card must say so, because you need to clear it before assigning the next task.
+Key consequence: **"resting" ≠ "vacant"**. Resting means "has an identity, has done work, is idle now"; vacant means "this seat has not started any work yet" (no session bound, or the session is still empty). A bot can perfectly well be "resting but 87% context-full" — the card must say so, because you need to clear it before assigning the next task.
 
-## The seven labels
+## The six labels
 
 | Label | Fact it states | Source | Figure |
 | --- | --- | --- | --- |
-| **Vacant** | no session bound yet | no binding | at rest (grey) |
-| **Standing by** | seated, session still empty | `blank` | at rest |
+| **Vacant** | this seat has not started any work yet (no session, or the session is still empty) | no binding / `blank` | at rest (greyed when unbound) |
 | **Working** | currently running | `running` | emblem fires |
 | **To review** | a turn ended and **you have not looked** | unread notice | settles + afterglow |
 | **Resting** | idle, nothing unread | otherwise | at rest |
 | **Awaiting answer** | it asked you a question and is stuck | projection `attention=question` | raises flag |
 | **Awaiting approval** | an un-reviewed approval is pending | projection `attention=approval` | raises flag |
 
-Status dots: working **green** · to-review **gold** `#C9A227` ![](https://img.shields.io/badge/-%20-C9A227?style=flat-square) · awaiting **cinnabar** `#B5453C` ![](https://img.shields.io/badge/-%20-B5453C?style=flat-square) · vacant / standing by / resting **grey**
+Status dots: working **green** · to-review **gold** `#C9A227` ![](https://img.shields.io/badge/-%20-C9A227?style=flat-square) · awaiting **cinnabar** `#B5453C` ![](https://img.shields.io/badge/-%20-B5453C?style=flat-square) · vacant / resting **grey**
 
-Priority: the two awaiting states outrank everything except vacant; the rest order as working → to-review → standing by → resting.
+Priority: the two awaiting states outrank everything except vacant; the rest order as working → to-review → resting.
+
+> **Why "standing by" is gone** (2026-11-17): a seat with a fresh empty session and a seat with no session are, from the user's point of view, the same thing — no work has started. Two labels made clicking an empty seat look like a state transition (user's words: vacant when not selected, "standing by" after selecting it without doing anything). Both now share the word **Vacant** and differ only in card appearance: unbound → dimmed, click creates; bound-but-empty → normal brightness, click opens. The label only becomes **Working** when the first prompt actually starts a turn.
 
 > **Why not call it "completed"**: `completed` is not a lifecycle state, it is an **unread notice** — the host lights it on the true→false edge of `running`, and it **does not judge success** (a crashed or interrupted turn lights it too).
 > Calling it "completed" is not merely imprecise, it can be **simply wrong**. It really only says two things: a turn ended, and you have not looked.
@@ -71,7 +72,19 @@ So when all eight cards are animating, you can tell **what each one is doing** �
 
 > Vertical space is a hard constraint: eight full cards must fit one screen with no scrollbar. Measured at 164px per full card (4 rows + gaps = 697px against ~750px usable), narrow windows drop secondary rows. Better to hide a row than to show a scrollbar.
 
+## Wrapping up: change directory / end a seat
+
+- **Where a seat works**: the active seat's card ends with `驻 <directory>`; hover for the full path.
+- **Change the working directory**: click that line, pick a directory. The plugin registers it as a
+  workspace, opens a fresh session there, and rebinds the seat; the old session stays where it was.
+  Stop a running turn first — switching does not interrupt it.
+- **Knock off (swap the task)**: `收工` at the right end of the active card's last row. A running turn
+  is cancelled first, then the task is lifted off the seat and it returns to 「虚席」 — the seat, its
+  persona and its number stay put; only the task changes. The session itself is **not deleted** — it
+  stays in its workspace. To drop the history too, archive it with ⌘⇧A.
+
 ## The main pane stays stock
+
 
 The board **does not rewrite the conversation area**. The main pane remains DSH's stock Conversation; the plugin only injects a **seat badge** into the conversation header, so you always know which seat you are talking to.
 
@@ -97,7 +110,7 @@ This plugin **replaces the host's `sidebar.workspaces` slot** (shadowing the bui
 
 ## Compatibility
 
-- Requires **DSH ≥ 0.2.0-rc.2** (`@deepseek-ai/dsh`); verified on 0.2.0-rc.2 — on 0.1.5-rc.2 install `dsh-agent-grid@0.1.3`
+- Requires **DSH ≥ 0.2.0-rc.2** (`@deepseek-ai/dsh`). Verified on **0.2.1-rc.3 (macOS desktop app)** and **0.2.2-rc.1 (web)** — on 0.1.5-rc.2 install `dsh-agent-grid@0.1.3`
 - Consumes only host design tokens and hard-codes no colours — so **any DSH theme can drive it**
 - Not affiliated with DeepSeek
 

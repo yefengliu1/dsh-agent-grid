@@ -20,7 +20,7 @@ eval set 是活的：把真实使用中发现的失败回灌成新的 `BV` / `AD
 
 | 标准输入源 | 本项目对应物 | 状态 |
 | --- | --- | --- |
-| PRD | `README.zh.md`（七种状态表 / 优先级 / 逃生开关 / 侵入性声明）＋ `README.md`（英文对照） | ✅ |
+| PRD | `README.zh.md`（六种状态表 / 优先级 / 逃生开关 / 侵入性声明）＋ `README.md`（英文对照） | ✅ |
 | Tech Design | `src/client.template.js` 内联决策注释（"实测踩过"那批）＋ `design/ux-design.md` §8 落地约束、§8b 三个静默 bug | ✅ 形态是**决策注释**，不是独立 `tech-design.md` |
 | Figma | **不存在本项目的 Figma 文件** | ❌ **无 `fileKey` / `nodeId`** |
 
@@ -66,17 +66,27 @@ eval set 是活的：把真实使用中发现的失败回灌成新的 `BV` / `AD
 
 ---
 
-## 1. 已知失败（用户报告，2026-09-23）
+## 1. 历史回归（2026-09-23 用户报告，已全部修复）
 
-**症状（用户口述）**：
-
-> 这条对话从八仙开始，然后又不见了；只能切回原始侧边栏才能看到。
-
-> **转写成 case**：`NC-BIND-01`（八仙发起的动作产出却无主）+ `NC-SESS-02`（认领失败静默）+ `RT-BIND-06`（切走不丢待命席位）。
+> 原始症状：「这条对话从八仙开始，然后又不见了；只能切回原始侧边栏才能看到。」
 >
-> **状态（2026-09-23）**：真根因（**H3** —— `reconcile` 的空白槽清理条件过宽）已在真机复现并修复（§1.4，附验证）；
-> 同时修掉了独立缺陷 H4 / H5。回归护栏见 §7。
-> **A1 / A2 不动** —— 复核后确认它们是**设计选择而非缺陷**（§1.3），并据此收紧了本 suite 自己的 C3。
+> 这一节现在的职责是**回归台账**：每条都写明由哪条断言守着。当时的取证过程（五层假设、
+> 真机三步复现、平台声明逐符号核对）折叠在下面，留作同类症状的对照样本 —— 不要再把它
+> 当成「当前已知失败」来读。
+
+| # | 症状 | 根因 | 修复 | 守住它的断言 |
+| --- | --- | --- | --- | --- |
+| R1 | 从八仙发起的对话在仙班里消失 | `reconcile` 空白槽清理条件过宽：`current` 一变就清 | 收紧到「`current` 本身就是空白槽」 | `tests/reconcile.mjs`「空白槽：current 是正常会话时不解绑」；`NC-BIND-01` |
+| R2 | 换到 symlink 目录后新会话**无主** | claim 用 `pickDirectory()` 的原始路径比 canonical `cwd`（H4） | 传 `WorkspaceView`（canonical），判定以 `workspaceId` 为准 | `NC-SESS-02`；contract C 段（不读已移除字段） |
+| R3 | 认领偶发失败 | `summary.cwd` 尚未投影时做严格比较（H5） | 未投影 ⇒「无法证伪就放行」 | 同 R2 |
+| R4 | 「待答」清不掉（假阳性） | `callId` 从 content block 挪到 `message.toolCallId` | 按新形状取 | contract A 段（真机 fixture） |
+| R5 | 卡片「结果」行恒空 | 同 R4 | 同 R4 | contract A 段 |
+| R6 | 切走一次就丢空白槽席位 | 空白槽清理与兜底认领错位 | `RT-BIND-06` | `tests/reconcile.mjs`「空白槽：current 换成另一个空白槽时，旧的解绑」 |
+| R7 | 已绑定的席在列表未就绪 / 投影缺失时显示「虚席」，点开后才变「待命」 | ① `stateOf` 用 `!summary` 判虚席，把「没绑定」和「快照暂时没有」混成一个词；② 空会话单列「待命」，让纯选择动作看起来像状态跃迁 | ① `stateOf(summary, bound)`：虚席只看绑定；② 「待命」合并进「虚席」 | contract E 段 |
+
+<details>
+<summary>当时的取证过程（2026-09-23，存档：五层假设 → 真机三步复现）</summary>
+
 
 ### 1.1 根因收敛（已查 DSH 平台类型声明，2026-09-23）
 
@@ -149,6 +159,8 @@ if (pendingSeat.cwd !== null && summary.cwd !== pendingSeat.cwd) return;
 | ① 点湘子空席 | `hanxiangzi = session-f8edbd2c`；卡片「虚席」→「**待命**」 |
 | ② 点钟离（**切走**） | **`hanxiangzi` 从绑定表消失**；卡片回到「**虚席**」 |
 
+> 表里的「待命」是当时的词。2026-11-17 起空会话也显示「虚席」，全文其余部分已按新词改写；这段取证内容保持原样存档。
+
 第 ① 步顺带证实了平台契约：`startSession` **复用了**该工作区里已有的 blank 会话（没有新建）—— 与 `UiWorkspace.startSession` 声明的 "reuse-or-create its blank session" 一致，**再次否定 H1**。
 
 **无主会话的身份**（从 host 侧核实，不是推断）：
@@ -158,14 +170,16 @@ if (pendingSeat.cwd !== null && summary.cwd !== pendingSeat.cwd) return;
 - 它与钟离席绑定的 `session-5261f768`（日志 **18.7 MB**）**同属一个 workspace**（`ETA_Route_Quality`）
 - 用户的工作目录 `realpath` 与原始路径**逐字一致** ⇒ H4 在本例中不触发（这也是我上一轮判错根因的直接原因）
 
-**根因**：`reconcile` 里「空白槽全局只留 current 那一个」原本是 `current` 一变就清理。于是**用户只要点去看别的正常对话，待命席位的绑定就被删掉**。而 `seeded` 之后不自动补位（C5），`claimPendingSeat` 的兜底又要求"目标席真的空着"（A1，原席此刻绑着别的会话）⇒ **不可自愈**。看板只渲染 bindings（A2）⇒ 它在仙班里彻底消失；它是 blank，在默认侧栏**只有作为 selected 才可见** ⇒ 只能切回原始侧边栏找回来。
+**根因**：`reconcile` 里「空白槽全局只留 current 那一个」原本是 `current` 一变就清理。于是**用户只要点去看别的正常对话，空白槽席位的绑定就被删掉**。而 `seeded` 之后不自动补位（C5），`claimPendingSeat` 的兜底又要求"目标席真的空着"（A1，原席此刻绑着别的会话）⇒ **不可自愈**。看板只渲染 bindings（A2）⇒ 它在仙班里彻底消失；它是 blank，在默认侧栏**只有作为 selected 才可见** ⇒ 只能切回原始侧边栏找回来。
 
 **修复**：触发条件收紧到「**current 本身也是空白槽**」—— 那才是 `connectWorkspace` 弹跳的现场特征（收件人是那个新 blank）。
 
-**验证**：同一实验重跑，第 ② 步 `hanxiangzi` **保留**、湘子仍是「待命」✅。
+**验证**：同一实验重跑，第 ② 步 `hanxiangzi` **保留**、湘子仍持着那条空白槽 ✅（当时显示「待命」）。
 
 > **A1 / A2 不改**（见 §1.3）：它们是设计选择，不是缺陷。修复 H3 之后，
 > "**从八仙发起的动作把对话弄丢**"这条路径已经堵住；而"从默认侧栏打开的会话不属于任何席位"本来就是合法的。
+
+</details>
 
 ---
 
@@ -178,20 +192,20 @@ if (pendingSeat.cwd !== null && summary.cwd !== pendingSeat.cwd) return;
 | C1 | 槽位身份常驻；**会话是可抛弃的负载** | `README.zh.md`「它解决什么」 |
 | C2 | 一个顶层会话**最多**被一个席位持有 | `reconcile` 播种段的 `taken` 集合 |
 | C3 | **从八仙发起的动作**（点空席新建 / `/clear` / 换目录）产出的会话，必须**出现在八仙里** —— 要么归某一席，要么给出可见的失败提示。**从默认侧栏打开或创建的会话无主是合法的**（八席不是会话列表，见 A2） | `claimPendingSeat` 规则 3 决策注释；2026-09-23 收紧 —— 原表述"任何时刻当前会话都必须有席位"过强，会把 A2 的合法状态判成 FAIL |
-| C4 | 绑定只在三种时机变：点空席=新建 / 点已绑席=切换（**不改绑定**）/ clear 或换目录=**同一席**重开 | `SeatGrid` 卡片的 `onClick` 分支 + `README.zh.md` 七态表虚席行 |
+| C4 | 绑定只在三种时机变：点空席=新建 / 点已绑席=切换（**不改绑定**）/ clear 或换目录=**同一席**重开 | `SeatGrid` 卡片的 `onClick` 分支 + `README.zh.md` 六态表虚席行 |
 | C5 | `seeded` 之后绑定归用户；**不自动补位** | `reconcile` 规则 3 注释、`design/ux-design.md` §8b bug 2 |
 | C6 | 子会话**不得**占席位 | `isSeatEligible`、`design/ux-design.md` §7 踩坑表 |
-| C7 | 空白槽**全局只留一个** —— 但只在 **current 本身也是空白槽**时才清理别的；用户切去看正常会话不牵连待命席位 | `reconcile` 第 2 条规则注释（2026-09-23 真机复现后收紧，见 §1.4） |
+| C7 | **同一工作区**内空白槽只留一个 —— 只在 **current 本身也是空白槽、且两者同区**时才清理别的；跨工作区、工作区认不出来时都不牵连 | `reconcile` 第 3 条规则注释（2026-09-23 收紧触发条件；2026-11-17 从全局收成同工作区） |
 
 ### 2.2 case
 
 #### HP-BIND-01 · 点空席 = 在该席新建会话，且新会话立刻归属该席
 
-- **Source**：C4、`README.zh.md` 七态表（虚席）、《`createSeatSession` 是八席模式下唯一新建入口》
+- **Source**：C4、`README.zh.md` 六态表（虚席）、《`createSeatSession` 是八席模式下唯一新建入口》
 - **前置**：仙班模式；钟离为虚席（灰、写着「此位虚席 · 点此就位」）
 - **步骤**：① 点钟离卡片 ② 等 3s
 - **Expected**
-  - 钟离卡片**不再**是虚席；状态为 `待命` 或按事实的其它态
+  - 钟离卡片仍归这一席（持着一条空白槽）；状态词仍是 `虚席`（2026-11-17 起不再有「待命」），但**不能**掉成「没绑定的虚席」——以绑定表为准
   - 主栏当前对话 == 这个新会话（不是别的席位的会话）
   - 对话头徽章显示 `钟离 · 总控/规划`
   - 原生「新建会话」按钮在仙班模式下不可见（切回默认侧栏才回来）
@@ -231,11 +245,11 @@ if (pendingSeat.cwd !== null && summary.cwd !== pendingSeat.cwd) return;
 - **可发性**：`uiWorkspace.startSession()` / `connectWorkspace()` 在平台侧决定新会话的 `blank`，插件侧无类型保证。
 - **备注**：本条是 §1.4 那个真机症状的直接靶子。修复前它在第 ③ 步之后 FAIL（绑定被 `reconcile` 清掉）。
 
-#### BV-BIND-01 · 同时处于「待命」（持空白会话）的席位 **≤ 1**
+#### BV-BIND-01 · **同一工作区**内持空白会话的席位 **≤ 1**
 
 - **Source**：C7
-- **Expected**：8 席中 `blank === true` 的持有者最多一个；多出的空白槽一律解绑
-- **判定**：`code` ｜ **Gating**：必过 ｜ **落点**：`tests/reconcile.mjs`（已有覆盖，保持）
+- **Expected**：同一工作区内 `blank === true` 的持有者最多一个；多出的空白槽一律解绑；**不同工作区互不影响**
+- **判定**：`code` ｜ **Gating**：必过 ｜ **落点**：`tests/reconcile.mjs` 第 3 组（3a 同区解绑 / 3c 跨区保留 / 3d 认不出不解绑 / 3e 成员兜底）
 - **可发性**：`SessionSummary.blank` 是平台声明字段（`design/ux-design.md` §8 卡片数据一行）。
 
 #### BV-BIND-02 · 一席只持有一个会话（换目录后旧会话必须让位）
@@ -266,14 +280,14 @@ if (pendingSeat.cwd !== null && summary.cwd !== pendingSeat.cwd) return;
 #### ★ AD-BIND-05 · 正在跑第一个 turn 的会话，不得被当成"空白槽"端走
 
 - **Source**：2026-09-24 用户真机判定（「我是从**八席**开始这个任务，然后它**被挪走了**，这个永远不应该发生；从其它地方就没有开始新会话的 UI 口子」）
-- **机制**：`blank` 的语义是「folded prefix 里没有 turn」（§1.2 确证），所以**一个刚开始跑第一个 turn、尚未折叠的会话仍然是 `blank === true`**。平台的 `connectWorkspace()` 于是把它当成"该工作区的空白槽"复用，`claimPendingSeat` 再把它从原席认领到新点的席 —— **用户眼前正在跑的任务换了个格子**。这与「待命席位可以有一个空白槽」在插件侧**无法用 `blank` 区分**：两者都是 `blank === true`。
+- **机制**：`blank` 的语义是「folded prefix 里没有 turn」（§1.2 确证），所以**一个刚开始跑第一个 turn、尚未折叠的会话仍然是 `blank === true`**。平台的 `connectWorkspace()` 于是把它当成"该工作区的空白槽"复用，`claimPendingSeat` 再把它从原席认领到新点的席 —— **用户眼前正在跑的任务换了个格子**。这与「席位可以持有一个空白槽」在插件侧**无法用 `blank` 区分**：两者都是 `blank === true`。
 - **步骤**：① 在 A 席点空席建会话 S ② 在 S 里发一条消息（turn 开始、尚未结束）③ 点另一席的空席 ④ 观察
 - **Expected**
   - S **仍归 A 席**，不被端走；A 席卡片照旧显示它在跑
   - 后点的那一席要么拿到**它自己的**新会话，要么给出显式失败提示（NC-BIND-01）
   - **绝不**：A 席正在用的会话换了持有者
 - **判定**：`manual-device` ｜ **Gating**：必过
-- **实现**：`ownedBlankIn()`（发起新建前探「目标工作区里有没有**有主的**待命槽」）+ `createFreshSession()`（有主就自己造，绕开平台复用）+ 认领规则 1 的 `claimedByOther` 闸（防御）
+- **实现**：`ownedBlankIn()`（发起新建前探「目标工作区里有没有**有主的**空白槽」）+ `createFreshSession()`（有主就自己造，绕开平台复用）+ 认领规则 1 的 `claimedByOther` 闸（防御）
 - **代价与边界**：同一工作区会因此出现多个 blank 会话。`reconcile` 仍保证「**席位持有的** blank ≤ 1」（BV-BIND-01 不受影响）；无主的 blank 留在工作区里供下次复用，只要求**有主的**不被端走，所以不会无限堆积。
 - **不可自动化**：`ownedBlankIn` 本身是纯函数（`tests/reconcile.mjs` 第 9 组已覆盖 5 个边界），但"平台到底会不会复用"只有真机判得出 ⇒ 本条停在 `manual-device`。
 
@@ -336,13 +350,13 @@ if (pendingSeat.cwd !== null && summary.cwd !== pendingSeat.cwd) return;
 - **Expected**：F5 之后每一席仍是刷新前那个会话（顺序、人不换）
 - **判定**：`manual-device` ｜ **Gating**：必过
 
-#### ★ RT-BIND-06 · 切走再切回：**待命席位的对话不丢**（真机踩过）
+#### ★ RT-BIND-06 · 切走再切回：**空白槽席位的对话不丢**（真机踩过）
 
 - **Source**：§1.4 真机复现 + C7（收紧后的契约）
-- **前置**：某席处于「待命」（持一个 blank 会话）
+- **前置**：某席持一个 blank 会话（虚席、已就位）
 - **步骤**：① 记下该席绑定的会话 ② 点另一个绑了**正常会话**的席位 ③ 再点回原来的席位
 - **Expected**
-  - 第 ② 步之后，那一席的绑定**仍在** —— 卡片还是「**待命**」，不是「虚席」
+  - 第 ② 步之后，那一席的绑定**仍在**（`bindings[seat]` 还是那条会话）；点开的是同一条会话，不是新建
   - 第 ③ 步能回到原来那个会话
   - 全程看板上不出现"当前会话无任何席位对应"
 - **判定**：`code`（`tests/reconcile.mjs` 第 3b 组）+ `manual-device` ｜ **Gating**：必过
@@ -354,13 +368,51 @@ if (pendingSeat.cwd !== null && summary.cwd !== pendingSeat.cwd) return;
 - **Expected**：改一次 `src/client.template.js` 触发 HMR 后，8 席绑定不变；控制台**不出现** `cannot get required service "sessions" in inactive context`
 - **判定**：`manual-device` ｜ **Gating**：监控
 
+#### HP-BIND-08 · 「收工」= 停这一轮 + 解绑回虚席（人还在，任务卸下）
+
+- **Source**：C4（"clear 或换目录 = 同一席重开"的第四种时机）、`endSeatTask`
+- **前置**：A 席绑会话 S，状态为 `休息`（空闲，无进行中的 turn）
+- **步骤**：点 A 席卡片末行的「收工」
+- **Expected**
+  - A 席回到 `虚席`（卡片显示「此位虚席 · 点此就位」），人设/编号/主色**不变**
+  - 卡片末行整条消失（`dsx-foot` 不再渲染）——「驻 …」与「收工」一起收走
+  - 会话 S **仍然存在**：默认侧栏能找到、内容未动；主栏若正看着它，对话**不会被删除**
+  - 未调用 `session.cancel()`（空闲时调它会在输入框落一条 `stop` 错误条）
+- **判定**：`manual-device` ｜ **Gating**：必过
+
+#### HP-BIND-09 · 运功中「收工」= 先停这一轮，再解绑
+
+- **Source**：`endSeatTask` 的 `running` 分支
+- **前置**：A 席绑会话 S，S 正在跑一个 turn（卡片 `运功` + 工具有动作）
+- **步骤**：点「收工」
+- **Expected**
+  - 该 turn 被停止（输入框出现停止后的状态，而非继续跑）；**之后**这一席才回到 `虚席`
+  - 停止失败（宿主拒绝）时仍解绑，但控制台留一条 `[agent-grid] 结束这一席：停不下来，仍然解绑`
+- **判定**：`manual-device` ｜ **Gating**：必过
+
+#### BV-BIND-03 · 收工后不会被兜底认领「写回」
+
+- **Source**：§8 第 8 条（2026-09-23 真机观察）+ §1 台账 R1/R6
+- **前置**：A 席是 `lastSeatId`（最近点开过），且当前会话正好是它的 blank
+- **步骤**：A 席收工 → 观察 10s
+- **Expected**：A 席保持 `虚席`，绑定表里没有它；**不出现** 6 秒后被 `setSeatBinding` 写回
+- **备注**：靠 `endSeatTask` 末尾的 `lastSeatId = null` 保证；值用 hook `localStorage.setItem` 的调用栈确证
+- **判定**：`manual-device` ｜ **Gating**：必过
+
+#### AD-BIND-06 · 非当前席不渲染末行：八席全满时高度不变
+
+- **Source**：`dsx-foot` 的可见性规则（`.dsx-card.is-active .dsx-foot`）
+- **步骤**：八席全部有会话；把某一个切为当前席，再切到另一个
+- **Expected**：只有当前席那张卡多出末行（约 17px）；八张卡整体**不出现滚动条**（`dsx-root` 的 `scrollHeight === clientHeight`）
+- **判定**：`code`（Playwright 量 `scrollHeight/clientHeight` 与卡片高度）｜ **Gating**：必过
+
 ---
 
 ## 3. 会话创建 / clear / 换目录（SESS）
 
 #### HP-SESS-01 · `/clear` = 在同一席、同一工作目录开一个新对话
 
-- **Source**：`design/ux-design.md` §7「`/clear` 语义」（保留人设、工作目录、槽位、标题）、`README.zh.md` 七态表
+- **Source**：`design/ux-design.md` §7「`/clear` 语义」（保留人设、工作目录、槽位、标题）、`README.zh.md` 六态表
 - **步骤**：A 席有会话（目录 W）时按 `Esc Esc`
 - **Expected**
   - A 席持有一个**新**会话；席位身份 / 编号 / 主色不变
@@ -419,19 +471,19 @@ if (pendingSeat.cwd !== null && summary.cwd !== pendingSeat.cwd) return;
 
 #### HP-STATE-01 · `running` → 运功
 
-- **Source**：`README.zh.md` 七态表「运功」行 + 优先级行
+- **Source**：`README.zh.md` 六态表「运功」行 + 优先级行
 - **Expected**：状态文字 `运功`、状态点**绿**、小人处于 `work` 态（法宝出效）
 - **判定**：`manual-device` ｜ **Gating**：必过
 
-#### HP-STATE-02 · 绑定了空白会话 → `待命`，**不是** `虚席`
+#### HP-STATE-02 · 绑定了空白会话 → 仍是 `虚席`，但**不变暗**（没有「待命」态）
 
-- **Source**：`stateOf` 注释（"三个席位被误画成灰的"）、`README.zh.md` 七态表
-- **Expected**：卡片显示 `待命`，**不是** `虚席`，**不是**灰掉；小人收起
+- **Source**：`stateOf` 的 `blank` 分支、`README.zh.md` 六态表（2026-11-17 合并「待命」）
+- **Expected**：卡片文字 `虚席`，但**不变暗**（`is-empty` 只给没绑会话的席）、头像不灰；小人收起；过程行提示「已就位 · 输入即开工」
 - **判定**：`manual-device` ｜ **Gating**：必过
 
 #### HP-STATE-03 · 有一轮结束且未读、且不是当前席 → `待过目`
 
-- **Source**：`README.zh.md`「为什么不叫已完成」+ 七态表
+- **Source**：`README.zh.md`「为什么不叫已完成」+ 六态表
 - **Expected**：状态点**金** `#C9A227`、文字 `待过目`、小人归位 + 金光余晖
 - **判定**：`manual-device` ｜ **Gating**：必过
 
@@ -446,12 +498,22 @@ if (pendingSeat.cwd !== null && summary.cwd !== pendingSeat.cwd) return;
   - 顶栏右侧从计数圆标切换为 `N 位待你`，N == 处于这两种状态的席位数
 - **判定**：`manual-device` ｜ **Gating**：必过
 
-#### NC-STATE-01 · **有绑定**的席位不得显示「虚席」，也不得灰掉
+#### HP-STATE-05 · 列表未就绪 / 投影暂时缺失 → **不显示** `虚席`
 
-- **Source**：`stateOf`（`empty` 只留给 `!summary`）、`README.zh.md`「休息 ≠ 虚席」
-- **Expected**：8 席里只要绑了会话，就没有任何一格是虚席样式或灰的；`虚席` 只出现在无绑定的格子
+- **Source**：`stateOf(summary, bound)`、`tests/contract.mjs` E 段
+- **前置**：某席已绑定会话；在列表 `phase='pending'` 的首帧（或 host 重连、刚认领尚未投影）观察
+- **Expected**
+  - 卡片**不是**灰色 `虚席`（落 `休息` 中性态）；文案 / 头像 / 点击行为仍按绑定走（打开该会话，而不是「点此就位」）
+  - 列表就绪后，同一席回到按事实的状态（虚席 / 休息 / 运功）
 - **判定**：`manual-device` ｜ **Gating**：必过
-- **备注**：这条是 `HP-STATE-02` 的负向对照，**分开报**——它是历史上真实踩过的坑。
+- **备注**：`虚席` 只回答「这一席有没有会话」，`summary` 只回答「它在干什么」。两者混用会把已绑定的席画成没启用 —— 真机症状正是「没选中时虚席、点开才变待命」（当时的状态词）。
+
+#### NC-STATE-01 · 没绑会话 → `虚席` 且变暗；绑了空会话 → `虚席` 但**不变暗**
+
+- **Source**：`stateOf`（`empty` 只给 `!bound`；`blank` 走 `rest` 样式）、`README.zh.md` 六态表
+- **Expected**：只有**没绑会话**的格子才变暗、头像灰、点它新建；持有空会话的格子正常亮度、点它打开
+- **判定**：`manual-device` ｜ **Gating**：必过
+- **备注**：2026-11-17 起「有绑定」不再等价于「非虚席」—— 空会话也是虚席，靠外观区分，不靠词。
 
 #### BV-STATE-01 · `running` 与 `attention` 同真 → 显示待答 / 待裁
 
@@ -635,10 +697,10 @@ Node 没有内置 PNG 解码器，让浏览器来解）：
 6. **本地化 / 窄容器**。中文之外的语言、极窄侧栏下「驻 <目录>」基名的截断。
 7. ~~无主会话的"看不见"~~ —— **2026-09-23 真机复核后，它既不是盲区、也不再是要求**：真机上观察到"看板 `activeIndex = -1` + 对话头无徽章 + 会话不在任何绑定里"三者一致，**这正是设计行为**（八席不是会话列表，§1.3 A2）。
    留在这里只作为一条**观察记录**：本 suite **无法自动区分「合法的无主」与「八仙动作失败导致的无主」** —— 这个区分要看动作是不是由八仙发起的，只有真机判得出。所以 `NC-BIND-01` 永远是 `manual-device`，升不成 `code`。这是本件里唯一一处**结构性**的自动化上限。
-8. **「清空一席」会被兜底认领自动撤销**（2026-09-23 真机发现）。`seeded`（C5）只挡住了"播种式补位"，**挡不住** `claimPendingSeat` 规则 3：只要**当前会话是一个无主的 blank**、且 `lastSeatId` 指向一个空席，它就会把那个 blank 认领过去。
+8. **「清空一席」会被兜底认领自动撤销**（2026-09-23 真机发现；**2026-11-16 已由「收工」落地并处理**）。`seeded`（C5）只挡住了"播种式补位"，**挡不住** `claimPendingSeat` 规则 3：只要**当前会话是一个无主的 blank**、且 `lastSeatId` 指向一个空席，它就会把那个 blank 认领过去。
    实测：删掉某席的 blank 绑定后 **6 秒内被写回**（在页面里 hook `localStorage.setItem`，调用栈确证是 `claimPendingSeat → setSeatBinding → writeStore`）；把 `current` 挪到一个**非 blank** 会话后，同样的删除就**保持住了**（6 秒无写回）。
-   这不一定是缺陷 —— A1 的设计本来就是"把无主 blank 归给上次所在的席"。但**"清空一席"一旦有 UI 入口**（`design/ux-design.md` §9 待定），就会正面撞上它：用户点清空时如果**还站在那个 blank 上**，操作会被立刻撤销 —— 正是 §8b bug 2「点了没反应」的形态。实现该入口时必须同时把 `current` 移走（或显式清 `lastSeatId`）。
-   **本 suite 不为它设 case**：期望值属于产品决策，未定之前不写断言。
+   这不一定是缺陷 —— A1 的设计本来就是"把无主 blank 归给上次所在的席"。但**任何"清空一席"的 UI 入口**都会正面撞上它：用户点清空时如果**还站在那个 blank 上**，操作会被立刻撤销 —— 正是 §8b bug 2「点了没反应」的形态。实现该入口时必须同时把 `current` 移走（或显式清 `lastSeatId`）。
+   **现状**：入口就是卡片末行的「收工」——它在解绑后显式 `lastSeatId = null`（见 §2.2 `BIND-END-01..04`），所以不会再被兜底认领写回；"先停这一轮"则由 `session.cancel()` 负责，且只在 `running` 时调。
 
 ---
 

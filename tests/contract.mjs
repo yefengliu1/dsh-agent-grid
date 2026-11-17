@@ -182,6 +182,59 @@ section("C 我们自己的源码（不得再读被移除的字段）");
 	check("宿主面按 message.toolCallId 取 callId", /message\.toolCallId/.test(readFileSync(INDEX_PATH, "utf8")));
 }
 
+section("D 「收工」这一席的出口");
+{
+	const client = readFileSync(join(repo, "src", "client.template.js"), "utf8");
+	const code = client
+		.replace(/\/\*[\s\S]*?\*\//g, "")
+		.replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+
+	check("卡片末行渲染「收工」（dsx-end 出现在 JSX 与 CSS 里）",
+		(code.match(/dsx-end/g) ?? []).length >= 2);
+	check("末行合成一条 dsx-foot，且只在当前席展开",
+		/className: "dsx-foot"/.test(code) && /\.dsx-card\.is-active \.dsx-foot\{display:flex;\}/.test(code));
+	check("endSeatTask 既有声明也有赋值",
+		/let endSeatTask = null;/.test(code) && /endSeatTask = \(seatId, sessionId, running\) => \{/.test(code));
+	check("fiber dispose 时清掉 endSeatTask（否则热更后旧闭包还在）",
+		/endSeatTask = null;\s*\n\s*\};\s*\n\s*\}\);/.test(code));
+	check("只在 running 时才 cancel（空闲会话 cancel 会往输入框落错误条）",
+		/if \(running\) \{/.test(code) && /session\.cancel\(\)/.test(code));
+	check("解绑走 clearSeatBinding，并复位 lastSeatId",
+		/clearSeatBinding\(seatId\);/.test(code) && /if \(lastSeatId === seatId\) lastSeatId = null;/.test(code));
+}
+
+// ---------------------------------------------------------------- E 状态判据
+section("E 「虚席」的判据（绑定，不是快照）");
+{
+	const client = readFileSync(join(repo, "src", "client.template.js"), "utf8");
+	const code = client
+		.replace(/\/\*[\s\S]*?\*\//g, "")
+		.replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+
+	// 真机症状：某个已绑定的席在「没选中」时显示虚席、点开（列表投影到了）才变待命（当时的状态词）。
+	// 根因是 stateOf 拿 `!summary` 判虚席 —— 把「没有绑定」和「快照暂时没有这条」混成
+	// 同一个词。绑定才是「这一席有没有会话」的判据，summary 只回答「它在干什么」。
+	check("stateOf 显式接收 bound（绑定事实与运行事实分开）",
+		/function stateOf\(summary, bound\)/.test(code));
+	check("虚席只由 !bound 判定，不再由 !summary 回落",
+		/if \(!bound\) return \{ cls: "empty"/.test(code) && !/if \(!summary\) return \{ cls: "empty"/.test(code));
+	check("调用点把 sid 的绑定事实传进去",
+		/stateOf\(summary, sid !== undefined\)/.test(code));
+
+	// 2026-11-17 P3：「待命」合并进「虚席」—— 点空席不再改状态词。
+	// 空会话必须落 rest 样式（正常亮度、点它打开），而不是 empty（变暗、点它新建）。
+	check("不再有「待命」状态标签", !/"待命"/.test(code));
+	check("空会话落「虚席」（rest 样式，词不变）",
+		/if \(summary\.blank\) return \{ cls: "rest", label: "虚席" \};/.test(code));
+
+	// 2026-11-17 P2：空白槽清理的作用域从全局收成「同一工作区」。
+	// 平台按工作区复用空白槽，全局 ≤1 会误伤别的区里正常就位的那一席。
+	check("空白槽清理按工作区收敛（workspaceKeyOf）",
+		/function workspaceKeyOf\(sessionId\)/.test(code)
+			&& /currentKey !== key/.test(code)
+			&& /workspaceKeyOf\(current\)/.test(code));
+}
+
 // ---------------------------------------------------------------- 结果
 console.log(
 	failures === 0

@@ -4,7 +4,7 @@
  * 为什么单独测这一段：它是纯函数（只依赖 localStorage + 会话列表快照），
  * 而它的一条规则曾经在真实 GUI 上造成「clear 完一席之后就再也回不去」——
  * 平台 `sessions.clear()` 会把 current 置空（用户正看着「选择工作目录」），
- * 那一刻如果照常裁决，「空白槽只留 current 那一个」会把所有待命席位的绑定一次清光。
+ * 那一刻如果照常裁决，「空白槽只留 current 那一个」会把所有空白槽席位的绑定一次清光。
  *
  * 直接从 src/client.template.js 里抽出真源码来跑（不复制逻辑），
  * 这样源码改了而测试没跟上时，测试会立刻失败，而不是继续骗自己。
@@ -44,7 +44,7 @@ const reconcileBlock = slice("/**\n\t\t * 席位绑定。三条规则", "/** 清
 const wsListBlock = oneLine("let workspaceListOf = () => [];");
 const claimBlock = slice("const claimTarget = (seatId, workspace) => {", "/**\n\t\t\t\t * 目标空白会话");
 const inClaimBlock = slice("const inClaimWorkspace = (claim, sessionId, summary) => {", "// 「这一席在等一个新空白会话」：记事实");
-// 「新建时会不会端走别人的待命槽」的判据 —— 从八席起的对话被挪到别的格子，
+// 「新建时会不会端走别人的空白槽」的判据 —— 从八席起的对话被挪到别的格子，
 // 正是这一段的返回值决定的（见第 9 组）。
 const ownedBlankBlock = slice("const ownedBlankIn = (workspace, snapshot, bind) => {", "const createFreshSession");
 
@@ -78,7 +78,8 @@ function check(name, condition, detail) {
 	console.error("  FAIL " + name + (detail === undefined ? "" : "  —— " + detail));
 }
 
-const BLANK = { blank: true, origin: "user" };
+const BLANK = { blank: true, origin: "user", cwd: "/ws/a" };
+const BLANK_B = { blank: true, origin: "user", cwd: "/ws/b" };
 const LIVE = { blank: false, origin: "user" };
 const SUBCON = { blank: false, origin: "subagent" };
 
@@ -103,13 +104,13 @@ const SUBCON = { blank: false, origin: "subagent" };
 	check("未就绪：不清绑定", after.hanzhongli === "a", JSON.stringify(after));
 }
 
-// ---- 3. 空白槽的清理，只发生在「current 也是空白槽」时 ----------------------
+// ---- 3. 空白槽的清理，只发生在「current 也是空白槽、且同一工作区」时 ----------
 {
-	// 3a. current 换成了**另一个空白槽** —— 这是 connectWorkspace 弹跳的现场，照旧清理
+	// 3a. current 换成**同一工作区的另一个空白槽** —— 这是 connectWorkspace 弹跳的现场，照旧清理
 	const { api } = makeSandbox();
 	api.reconcile(["a", "b"], { a: BLANK, b: BLANK }, true, "a");
 	const bind = api.reconcile(["a", "b"], { a: BLANK, b: BLANK }, true, "b");
-	check("空白槽：current 换成另一个空白槽时，旧的解绑", bind.hanzhongli === undefined, JSON.stringify(bind));
+	check("空白槽：同工作区的 current 换成另一个空白槽时，旧的解绑", bind.hanzhongli === undefined, JSON.stringify(bind));
 
 	// 3b. current 换成了**正常会话** —— 用户只是切走看一眼，空白槽必须留住。
 	// 真机复现过：按旧写法这里会解绑，于是那一席的对话在八席看板上消失，
@@ -118,12 +119,34 @@ const SUBCON = { blank: false, origin: "subagent" };
 	kept.api.reconcile(["a", "b"], { a: BLANK, b: LIVE }, true, "a");
 	const after = kept.api.reconcile(["a", "b"], { a: BLANK, b: LIVE }, true, "b");
 	check("空白槽：current 是正常会话时不解绑（本次修复）", after.hanzhongli === "a", JSON.stringify(after));
+
+	// 3c. 2026-11-17：**不同工作区**的空白槽互不影响 —— 平台按工作区复用，
+	// 全局 ≤1 会把另一个工作区里正常就位的那一席误判成孤儿。
+	const cross = makeSandbox();
+	cross.api.reconcile(["a", "b"], { a: BLANK, b: BLANK_B }, true, "b");
+	const keptCross = cross.api.reconcile(["a", "b"], { a: BLANK, b: BLANK_B }, true, "b");
+	check("空白槽：不同工作区的空白槽席不受牵连", keptCross.hanzhongli === "a", JSON.stringify(keptCross));
+
+	// 3d. 工作区认不出来（cwd 缺失、工作区列表未就绪）时**不解绑**：
+	// 宁可留一席，也不能凭猜测把用户的会话判死。
+	const unknown = makeSandbox();
+	const NOCWD = { blank: true, origin: "user" };
+	unknown.api.reconcile(["a", "b"], { a: NOCWD, b: NOCWD }, true, "a");
+	const keptUnknown = unknown.api.reconcile(["a", "b"], { a: NOCWD, b: NOCWD }, true, "b");
+	check("空白槽：认不出工作区时不解绑（安全方向）", keptUnknown.hanzhongli === "a", JSON.stringify(keptUnknown));
+
+	// 3e. cwd 缺失但工作区成员能认出同一区 —— 走 sessionIds 兜底
+	const byMember = makeSandbox();
+	byMember.api.setWorkspaceList([{ workspaceId: "w1", path: "/p", sessionIds: ["a", "b"] }]);
+	byMember.api.reconcile(["a", "b"], { a: NOCWD, b: NOCWD }, true, "a");
+	const cleanedByMember = byMember.api.reconcile(["a", "b"], { a: NOCWD, b: NOCWD }, true, "b");
+	check("空白槽：cwd 缺失时用工作区成员判同区", cleanedByMember.hanzhongli === undefined, JSON.stringify(cleanedByMember));
 }
 
 // ---- 4. 本次修复：current 为空时不得清空任何绑定 ----------------------------
 {
 	const { api } = makeSandbox();
-	// 钟离席持有一个空白槽（待命，且是 current），洞宾席持有一个活会话。
+	// 钟离席持有一个空白槽（current），洞宾席持有一个活会话。
 	api.reconcile(["a", "b"], { a: BLANK, b: LIVE }, true, "a");
 	const before = api.reconcile(["a", "b"], { a: BLANK, b: LIVE }, true, "a");
 	check("前置：空白槽归 current 那一席", before.hanzhongli === "a" && before.ludongbin === "b", JSON.stringify(before));
@@ -133,7 +156,7 @@ const SUBCON = { blank: false, origin: "subagent" };
 	const after = api.reconcile(["a", "b"], { a: BLANK, b: LIVE }, true, undefined);
 	check("current 为空：不清绑定（本次修复）", after.hanzhongli === "a" && after.ludongbin === "b", JSON.stringify(after));
 
-	// current 落到**另一个空白槽**时，别的空白槽仍然照常解绑；正常会话不受影响
+	// current 落到**同一工作区的另一个空白槽**时，别的空白槽仍然照常解绑；正常会话不受影响
 	const restored = api.reconcile(["a", "b", "c"], { a: BLANK, b: LIVE, c: BLANK }, true, "c");
 	check("current 落在另一个空白槽：裁决照旧生效",
 		restored.hanzhongli === undefined && restored.ludongbin === "b", JSON.stringify(restored));
@@ -197,9 +220,9 @@ const SUBCON = { blank: false, origin: "subagent" };
 		api.inClaimWorkspace(api.claimTarget("hanzhongli", undefined), "s1", { cwd: "/tmp/y" }) === true);
 }
 
-// ---- 9. 新建时不得端走别人的待命槽 ------------------------------------------
+// ---- 9. 新建时不得端走别人的空白槽 ------------------------------------------
 // 真机现象：**从八席起的对话被挪到别的格子**。机制是平台的 connectWorkspace() 会复用
-// 「该工作区第一个 blank 会话」，而八席里「待命」是正式状态、多个席各自持有空白槽是常态 ——
+// 「该工作区第一个 blank 会话」，而八席里多个席各自持有空白槽是常态 ——
 // 于是复用到别人的槽上，认领再把它从原席移走。修复：发起新建前先探这个判据，有主就自己造。
 {
 	const { api } = makeSandbox();
@@ -207,7 +230,7 @@ const SUBCON = { blank: false, origin: "subagent" };
 	const ws = { workspaceId: "ws-1", path: "/p", sessionIds: ["s-blank-orphan", "s-other", "s-live"] };
 	const snap = (entries) => ({ ids: Object.keys(entries), byId: entries });
 
-	check("认出别人的待命槽（blank + 有主）",
+	check("认出别人的空白槽（blank + 有主）",
 		api.ownedBlankIn(ws, snap({ "s-other": { blank: true } }), bind)?.id === "hanzhongli");
 	check("无主的 blank 不算 —— 平台复用它本来就是设计（空席新建走这条路）",
 		api.ownedBlankIn(ws, snap({ "s-blank-orphan": { blank: true } }), {}) === null);

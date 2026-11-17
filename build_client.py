@@ -101,6 +101,26 @@ def main():
     sprite_js = json.dumps(sprites, ensure_ascii=False)
     out = tpl.replace(marker, "/*__SPRITES__*/ " + sprite_js)
     out = out.replace(cmark, baxian.choreo_css())
+
+    # ---- 模式：--check 只比对不写盘（CI / npm test 用）----------------------
+    # 为什么需要它：lib/client.js 是产物，但历史上有人（包括绕过程序的改动）直接手改过它。
+    # 一旦产物领先于模板，下一次 build 会**静默删掉这些改动** —— 2026-11-16 的「收工」
+    # 就是这样差点丢的。--check 让「产物 != 模板」在测试阶段就红。
+    if "--check" in sys.argv[1:]:
+        existing = OUT.read_text(encoding="utf8") if OUT.exists() else ""
+        if existing == out:
+            print(f"ok  {OUT.name} 与模板构建结果一致")
+            return
+        import difflib
+        diff = list(difflib.unified_diff(
+            existing.splitlines(keepends=True), out.splitlines(keepends=True),
+            fromfile="lib/client.js（当前）", tofile="lib/client.js（模板构建结果）", n=2))
+        sys.stderr.write("".join(diff[:40]))
+        sys.stderr.write(
+            f"\n\nlib/client.js 与 src/client.template.js 不一致（{len(diff)} 行差异）。\n"
+            f"  产物必须由模板生成：先改 src/client.template.js，再跑 `python3 build_client.py`。\n")
+        raise SystemExit(1)
+
     OUT.write_text(out, encoding="utf8")
 
     n = out.count("<symbol id=\\")  # 数注入进 JS 字符串的 '<symbol id=\"'（注释里提到 symbol 不算）
