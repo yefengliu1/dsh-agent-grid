@@ -99,11 +99,18 @@ window.__ModuleLoader__.load({
 				if (raw) {
 					const parsed = JSON.parse(raw);
 					if (parsed && typeof parsed === "object" && parsed.bind) {
-						return { seeded: parsed.seeded === true, bind: parsed.bind };
+						return {
+							seeded: parsed.seeded === true,
+							bind: parsed.bind,
+							// 用户亲手结束过的会话（收工/清空）：只用于**播种**排除，
+							// 不阻止用户主动重新打开它（那时它已经是新的一次决定）。
+							dismissed: Array.isArray(parsed.dismissed) ? parsed.dismissed : [],
+							lastCurrent: typeof parsed.lastCurrent === "string" ? parsed.lastCurrent : undefined,
+						};
 					}
 				}
 			} catch (e) { /* localStorage 不可用就退化成不持久 */ }
-			return { seeded: false, bind: {} };
+			return { seeded: false, bind: {}, dismissed: [], lastCurrent: undefined };
 		}
 
 		function writeStore(store) {
@@ -138,15 +145,37 @@ window.__ModuleLoader__.load({
 			const eligible = ids.filter((id) => isSeatEligible(byId[id]));
 
 			if (!store.seeded) {
+				/**
+				 * 播种规则（2026-11-18 重定，见 evals.md §11 STAB-01/02）：
+				 *   1. 只播**当前工作区**的会话 —— 跨区会话进看板会让「切个目录八席全变」；
+				 *   2. 排除用户亲手结束过的（dismissed 墓碑）—— 防止关掉的对话又回来；
+				 *   3. 当前会话优先，其余按 `updatedAt` 倒序 —— 旧对话不再占满八席。
+				 * 工作区认不出来（未投影）时一律放行，宁可多播也不误杀。
+				 */
+				const dismissed = new Set(store.dismissed);
+				const grade = (id) => {
+					const summary = byId[id];
+					const v = summary ? summary.updatedAt : undefined;
+					if (typeof v === "number") return v;
+					if (typeof v === "string") return Date.parse(v) || 0;
+					return 0;
+				};
+				// 只排除墓碑；不做「跨工作区排除」—— 既有的「不同工作区的空白槽各自就位」
+				// 语义（tests/reconcile.mjs 3c）依赖它对所有会话可见。
+				const pool = eligible.filter((id) => !dismissed.has(id));
+				// 只按活跃度倒序；活跃度相同（或都没有 updatedAt）时保持宿主给的顺序。
+				// 不额外把 current 提到最前 —— 那会让「换个顺序重放」得到不同席位（违背 STAB-03）。
+				pool.sort((a, b) => grade(b) - grade(a));
 				const taken = new Set();
 				SEATS.forEach((seat) => {
-					const pick = eligible.find((id) => !taken.has(id));
+					const pick = pool.find((id) => !taken.has(id));
 					if (pick !== undefined) {
 						store.bind[seat.id] = pick;
 						taken.add(pick);
 					}
 				});
 				store.seeded = true;
+				if (current !== undefined) store.lastCurrent = current;
 				writeStore(store);
 				return store.bind;
 			}
@@ -215,6 +244,27 @@ window.__ModuleLoader__.load({
 				delete store.bind[seat.id];
 				changed = true;
 			});
+			/**
+			 * 入场许可（evals.md §11 STAB-07 / I1「无幽灵」）：
+			 * 看板独占侧栏，所以「从别处打开、却不占席」的会话在看板里根本不存在。
+			 * current 每变一次就判定一次：有空席就当场补绑；满席则不动绑定（由 UI 提示）。
+			 *
+			 * 只看 current **变化**，不看每次渲染 —— 否则用户点「收工」解绑后，
+			 * 同一帧就会被重新补回席位，「结束」永远不生效。
+			 */
+			if (current !== undefined && store.lastCurrent !== current) {
+				store.lastCurrent = current;
+				changed = true;
+				const held = new Set(Object.values(store.bind));
+				// 空白槽（用户还没开工的空会话）不占席：它只是平台 connectWorkspace 的中间态，
+				// 绑上去会和「同工作区最多一个空白槽席」的规则打架（tests/reconcile.mjs 3d）。
+				const isBlank = byId[current] !== undefined && byId[current].blank === true;
+				if (!held.has(current) && !isBlank && isSeatEligible(byId[current])) {
+					const free = SEATS.find((seat) => store.bind[seat.id] === undefined);
+					if (free !== undefined) store.bind[free.id] = current;
+				}
+			}
+
 			if (changed) writeStore(store);
 			return store.bind;
 		}
@@ -224,6 +274,8 @@ window.__ModuleLoader__.load({
 			const store = readStore();
 			store.seeded = true;
 			if (store.bind[seatId] !== undefined) {
+				// 记墓碑：这一席的会话是用户亲手结束的，下次播种不得把它再播回来。
+				if (!store.dismissed.includes(store.bind[seatId])) store.dismissed.push(store.bind[seatId]);
 				delete store.bind[seatId];
 				writeStore(store);
 			}
@@ -620,6 +672,12 @@ window.__ModuleLoader__.load({
 			// 只有 phase==='ready' 的列表才可信 —— pending 时 ids 为空，裁剪会误伤全部绑定
 			const bindings = reconcile(ids, byId, !!state && state.phase === "ready", current);
 
+			// 入场许可的**结果**展示：满席且当前会话没入席 → 看板上必须说出来，
+			// 不能让它变成「你正在聊、但看板里没有」的幽灵（STAB-09 的提示分支）。
+			const seatedIds = Object.values(bindings);
+			const unseated = current !== undefined && !seatedIds.includes(current);
+			const allSeated = SEATS.every((seat) => bindings[seat.id] !== undefined);
+
 			const cells = SEATS.map((seat) => {
 				const sid = bindings[seat.id];
 				const summary = sid !== undefined ? byId[sid] : undefined;
@@ -712,6 +770,9 @@ window.__ModuleLoader__.load({
 						? h("span", { key: "a", className: "dsx-attn" }, cells.filter((c) => c.needsYou).length + " 位待你")
 						: h("span", { key: "c", className: "dsx-count" }, "8"),
 				]),
+				unseated && allSeated
+					? h("div", { key: "warn", className: "dsx-warn" }, "八席已满：当前对话未入席，先收工一席再打开它")
+					: null,
 				// 2 列 x 4 行：每格 ~120px —— 刚好够「头像 + 名字/状态 + 工具 + 想 + ↳ + 说」。
 				// 4 列的话每格只剩 ~57px，任何动态文字都放不下（实测过），
 				// 而「八席各自的实时动态同时可见」才是这个看板的意义。
@@ -864,6 +925,8 @@ window.__ModuleLoader__.load({
    左右各 12，与宿主自己的行（Plugins 行 14..266）同一量级且对称。 */
 .dsx-root{display:flex;flex-direction:column;gap:8px;min-height:0;height:100%;padding:2px 12px 8px 0;overflow-y:auto;}
 /* 表头跟卡片同一左右沿（原来多 2px，标题和第一列卡片对不齐）。 */
+.dsx-warn{display:block;margin:0 0 6px;padding:6px 8px;border-radius:6px;
+  background:rgba(200,90,70,.18);color:#f0b9a8;font-size:10px;line-height:1.4;}
 .dsx-head{display:flex;align-items:center;justify-content:space-between;padding:0;}
 .dsx-title{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary,#8B8478);}
 .dsx-count{font-size:10px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary,#8B8478);

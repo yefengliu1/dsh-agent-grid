@@ -243,5 +243,65 @@ const SUBCON = { blank: false, origin: "subagent" };
 		api.ownedBlankIn(undefined, snap({ "s-other": { blank: true } }), bind) === null);
 }
 
+
+// ---- 10. 2026-11-18 稳定性（evals.md §11 STAB） ----------------------------
+{
+	// STAB-01：用户收工过的会话（墓碑）不再被播种
+	const t1 = makeSandbox();
+	t1.api.writeStore({ seeded: true, bind: {}, dismissed: ["a"], lastCurrent: "a" });
+	t1.api.writeStore({ seeded: false, bind: {}, dismissed: ["a"] });
+	const s1 = t1.api.reconcile(["a", "b"], { a: LIVE, b: LIVE }, true, "b");
+	check("STAB-01 墓碑不复活：收工过的会话不再入席",
+		!Object.values(s1).includes("a"), JSON.stringify(s1));
+
+	// STAB-02：按 updatedAt 倒序播种（最近的先入席），不按列表原序
+	const t2 = makeSandbox();
+	const s2 = t2.api.reconcile(
+		["old", "new"],
+		{ old: { blank: false, origin: "user", updatedAt: 100 }, new: { blank: false, origin: "user", updatedAt: 900 } },
+		true,
+		undefined,
+	);
+	check("STAB-02 活跃度倒序：最近的会话占第一席", s2.hanzhongli === "new", JSON.stringify(s2));
+
+	// STAB-03：播种幂等 —— 同一输入重放，结果一致且不再改写 store
+	const t3 = makeSandbox();
+	const a3 = t3.api.reconcile(["a", "b"], { a: LIVE, b: LIVE }, true, undefined);
+	const raw3 = t3.store.get("dsh-agent-grid.bindings.v3");
+	const b3 = t3.api.reconcile(["a", "b"], { a: LIVE, b: LIVE }, true, undefined);
+	check("STAB-03 播种幂等：重放结果一致", JSON.stringify(a3) === JSON.stringify(b3), JSON.stringify(b3));
+	check("STAB-03 播种幂等：第二次不再写 store", t3.store.get("dsh-agent-grid.bindings.v3") === raw3);
+
+	// STAB-07：旁路打开、有空席 → 自动入席（不再有「看板外的当前会话」）
+	const t7 = makeSandbox();
+	t7.api.writeStore({ seeded: true, bind: {}, dismissed: [] });
+	const s7 = t7.api.reconcile(["x"], { x: LIVE }, true, "x");
+	check("STAB-07 旁路打开：有空席就自动入席", s7.hanzhongli === "x", JSON.stringify(s7));
+
+	// STAB-09：满席 + 旁路打开 → 不静默顶掉任何一席
+	const t9 = makeSandbox();
+	const full = {};
+	t9.api.SEATS.forEach((seat, i) => { full[seat.id] = "s" + i; });
+	t9.api.writeStore({ seeded: true, bind: full, dismissed: [], lastCurrent: "s0" });
+	const byId9 = {};
+	t9.api.SEATS.forEach((_, i) => { byId9["s" + i] = LIVE; });
+	byId9.z = LIVE;
+	const s9 = t9.api.reconcile(Object.keys(byId9), byId9, true, "z");
+	check("STAB-09 满席不静默顶席：八席绑定逐字不变",
+		JSON.stringify(s9) === JSON.stringify(full), JSON.stringify(s9));
+
+	// STAB-11：收工后同一会话仍是 current —— 不得立刻被重新补席
+	const t11 = makeSandbox();
+	t11.api.writeStore({ seeded: true, bind: {}, dismissed: ["a"], lastCurrent: "a" });
+	const s11 = t11.api.reconcile(["a"], { a: LIVE }, true, "a");
+	check("STAB-11 收工不回弹：current 未变化时不自动补席", s11.hanzhongli === undefined, JSON.stringify(s11));
+
+	// 空白槽不占席（平台 connectWorkspace 的中间态）
+	const t12 = makeSandbox();
+	t12.api.writeStore({ seeded: true, bind: {}, dismissed: [] });
+	const s12 = t12.api.reconcile(["blk"], { blk: BLANK }, true, "blk");
+	check("空白槽不自动入席（避免与同区唯一空白槽规则打架）", s12.hanzhongli === undefined, JSON.stringify(s12));
+}
+
 console.log(failures === 0 ? "\nreconcile: 全部通过" : `\nreconcile: ${failures} 项失败`);
 process.exit(failures === 0 ? 0 : 1);
